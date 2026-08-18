@@ -1,58 +1,122 @@
 import { describe, expect, test } from "bun:test";
-import { layoutStatusFor } from "../../src/spreader/layout.ts";
+import {
+  type LayoutFile,
+  layoutStatusFor,
+  parseLayouts,
+} from "../../src/spreader/layout.ts";
 
 const HOME = "/Users/andrew";
 
-const config = `
+const files: LayoutFile[] = [
+  {
+    file: "naptime",
+    text: `
 workspaces:
-  - name: addidat
-    root: ~/freelancing/addidat/src/addidat-web
+  - name: naptime
+    root: ~/src/naptime
     tabs:
-      - label: addidat
-        panes:
-          - command: just dev; zed .
-  - name: absolute
+      - label: naptime
+`,
+  },
+  {
+    file: "hrock",
+    text: `
+workspaces:
+  - name: hrock
+    root: ~/hrock/src/hamilton_rock
+`,
+  },
+  {
+    file: "absolute-thing",
+    text: `
+workspaces:
+  - name: thing
     root: /opt/projects/thing/
-`;
+`,
+  },
+];
 
-describe("layoutStatusFor", () => {
-  test("finds a layout declared with a ~ path", () => {
-    const status = layoutStatusFor(
-      config,
-      "/Users/andrew/freelancing/addidat/src/addidat-web",
+describe("parseLayouts", () => {
+  test("reads one workspace per file, keyed by filename", () => {
+    // `spread` takes the FILE name, so that is what we have to report back —
+    // the `name:` inside is the workspace label herdr will show.
+    const layouts = parseLayouts(files, HOME);
+
+    expect(layouts.map((l) => l.file).sort()).toEqual([
+      "absolute-thing",
+      "hrock",
+      "naptime",
+    ]);
+  });
+
+  test("expands ~ in a declared root", () => {
+    const layouts = parseLayouts(files, HOME);
+
+    expect(layouts.find((l) => l.file === "naptime")?.root).toBe(
+      "/Users/andrew/src/naptime",
+    );
+  });
+
+  test("keeps the workspace label separately from the filename", () => {
+    const layouts = parseLayouts(files, HOME);
+    const found = layouts.find((l) => l.file === "absolute-thing");
+
+    expect(found?.label).toBe("thing");
+    expect(found?.root).toBe("/opt/projects/thing");
+  });
+
+  test("skips a malformed file without losing the good ones", () => {
+    const layouts = parseLayouts(
+      [...files, { file: "broken", text: "workspaces: [oops" }],
       HOME,
     );
 
-    expect(status).toEqual({ kind: "declared", name: "addidat" });
+    expect(layouts.map((l) => l.file)).toContain("naptime");
+    expect(layouts.map((l) => l.file)).not.toContain("broken");
+  });
+});
+
+describe("layoutStatusFor", () => {
+  test("finds the layout for a project, by root", () => {
+    // Regression: milestone 1 read the plugin's config.yaml, which is a symlink
+    // to whichever layout was applied last — so it reported "no layout" for
+    // every project except that one.
+    const status = layoutStatusFor(
+      parseLayouts(files, HOME),
+      "/Users/andrew/src/naptime",
+    );
+
+    expect(status).toEqual({ kind: "declared", file: "naptime", label: "naptime" });
   });
 
-  test("finds a layout declared with an absolute path, ignoring a trailing slash", () => {
-    const status = layoutStatusFor(config, "/opt/projects/thing", HOME);
+  test("matches a root declared absolutely, trailing slash and all", () => {
+    const status = layoutStatusFor(parseLayouts(files, HOME), "/opt/projects/thing");
 
-    expect(status).toEqual({ kind: "declared", name: "absolute" });
+    expect(status.kind).toBe("declared");
   });
 
-  test("reports absent for a project with no layout", () => {
-    const status = layoutStatusFor(config, "/Users/andrew/src/herdr-tab-new", HOME);
+  test("reports absent for a project with no layout anywhere", () => {
+    const status = layoutStatusFor(
+      parseLayouts(files, HOME),
+      "/Users/andrew/src/herdr-tab-new",
+    );
 
     expect(status.kind).toBe("absent");
   });
 
-  test("reports unknown when there is no config at all", () => {
-    const status = layoutStatusFor(null, "/Users/andrew/anything", HOME);
-
-    expect(status.kind).toBe("unknown");
+  test("reports unknown when the layout directory could not be read", () => {
+    expect(layoutStatusFor(null, "/Users/andrew/src/naptime").kind).toBe(
+      "unknown",
+    );
   });
 
-  test("reports unknown rather than throwing on malformed YAML", () => {
-    const status = layoutStatusFor("workspaces: [oops", "/Users/andrew", HOME);
+  test("does not match a project merely beneath a declared root", () => {
+    // A layout for ~/src/naptime is not a layout for ~/src/naptime/www.
+    const status = layoutStatusFor(
+      parseLayouts(files, HOME),
+      "/Users/andrew/src/naptime/www",
+    );
 
-    expect(status.kind).toBe("unknown");
-  });
-
-  test("reports unknown when the config has no workspaces list", () => {
-    const status = layoutStatusFor("something_else: true", "/Users/andrew", HOME);
-
-    expect(status.kind).toBe("unknown");
+    expect(status.kind).toBe("absent");
   });
 });

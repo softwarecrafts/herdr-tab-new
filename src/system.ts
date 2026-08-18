@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -8,7 +8,18 @@ import {
   selectHerdrPayload,
 } from "./herdr/client.ts";
 import type { Pane, Session, Tab, Workspace } from "./herdr/types.ts";
-import { SPREADER_CONFIG_PATH } from "./spreader/layout.ts";
+import { LAYOUT_DIR, type LayoutFile } from "./spreader/layout.ts";
+import {
+  agentStartArgs,
+  type AgentStarted,
+  type AgentStartInput,
+  isShellNotReady,
+  parseAgentStarted,
+  parseTabCreated,
+  tabCreateArgs,
+  type TabCreated,
+  type TabCreateInput,
+} from "./herdr/create.ts";
 
 /**
  * Everything that touches the outside world. Deliberately thin — all judgement
@@ -107,18 +118,86 @@ export function gitBranch(cwd: string): string | null {
   return ok && stdout.trim() ? stdout.trim() : null;
 }
 
-export function readSpreaderConfig(home = homedir()): string | null {
-  for (const name of ["config.yaml", "config.yml"]) {
-    const path = join(home, SPREADER_CONFIG_PATH).replace(/config\.yaml$/, name);
-    if (existsSync(path)) {
-      try {
-        return require("node:fs").readFileSync(path, "utf8") as string;
-      } catch {
-        return null;
-      }
+/**
+ * Read every layout in ~/.herdr-spreader/. One workspace per file; the basename
+ * is what `spread` takes as its argument. Returns null when the directory is
+ * unreadable, which the caller reports as "unknown" rather than "absent".
+ */
+export function readLayoutFiles(home = homedir()): LayoutFile[] | null {
+  const dir = join(home, LAYOUT_DIR);
+
+  try {
+    return readdirSync(dir)
+      .filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"))
+      .map((f) => ({
+        file: f.replace(/\.ya?ml$/, ""),
+        text: readFileSync(join(dir, f), "utf8"),
+      }));
+  } catch {
+    return null;
+  }
+}
+
+function whichSpread(): string | null {
+  const { ok, stdout } = capture(["/usr/bin/which", "spread"]);
+  return ok && stdout.trim() ? stdout.trim() : null;
+}
+
+/** `spread` is Andrew's wrapper; only the no-workspace path needs it. */
+export const spreadAvailable = (): boolean => whichSpread() !== null;
+
+/**
+ * Build a workspace from its layout. `spread` is idempotent — it focuses an
+ * already-open workspace rather than building a second copy with duplicate dev
+ * servers — so it is safe to call whenever resolution came up empty.
+ */
+export function runSpread(layoutFile: string): {
+  ok: boolean;
+  output: string;
+} {
+  const bin = whichSpread();
+  if (!bin) return { ok: false, output: "spread is not on PATH" };
+
+  const { ok, stdout, stderr } = capture([bin, layoutFile]);
+  return { ok, output: `${stdout}${stderr}`.trim() };
+}
+
+export function createTab(
+  socketPath: string,
+  input: TabCreateInput,
+): TabCreated {
+  return parseTabCreated(runHerdr(tabCreateArgs(input), socketPath));
+}
+
+/** How long to keep waiting for the new pane's shell to reach a prompt. */
+export const SHELL_WAIT_MS = 10_000;
+const SHELL_POLL_MS = 250;
+
+/**
+ * Start the agent, waiting out the gap between herdr handing back a pane and
+ * that pane's shell reaching an interactive prompt. Only that specific
+ * rejection is retried — anything else fails immediately, so a bad agent kind
+ * still reports at once.
+ */
+export function startAgent(
+  socketPath: string,
+  input: AgentStartInput,
+  shellWaitMs = SHELL_WAIT_MS,
+): AgentStarted {
+  const deadline = Date.now() + shellWaitMs;
+
+  for (;;) {
+    try {
+      return parseAgentStarted(runHerdr(agentStartArgs(input), socketPath));
+    } catch (err) {
+      if (!isShellNotReady(err) || Date.now() >= deadline) throw err;
+      Bun.sleepSync(SHELL_POLL_MS);
     }
   }
-  return null;
 }
 
 export const home = homedir;
+
+export function closeTab(socketPath: string, tabId: string): void {
+  runHerdr(["tab", "close", tabId], socketPath);
+}

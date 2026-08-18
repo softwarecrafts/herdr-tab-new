@@ -6,7 +6,8 @@ run from a terminal in Zed, or from anywhere else.
 herdr records directories against *panes*, not workspaces, so this works out which workspace
 you mean by matching your project root against the working directory of every live pane.
 
-**Milestone 1 resolves and reports only. It never changes herdr's state.**
+If no live workspace matches, the matching herdr-spreader layout is applied with `spread`
+and resolution is retried. Use `--dry-run` to see what would happen without doing it.
 
 ## Usage
 
@@ -19,6 +20,12 @@ herdr-tab-new [name] [options]
 ```
 
 ```
+$ herdr-tab-new
+Started claude in tab "compliance" (w2:t2), workspace compliance (w2)
+
+  directory  /Users/andrew/hrock/src/compliance
+  pane       w2:p2
+
 $ herdr-tab-new --dry-run
 New claude session → tab "compliance" in workspace compliance (w2)
 
@@ -40,6 +47,7 @@ Exit codes: `0` ok · `1` usage · `2` herdr unavailable · `3` no matching work
 | Which workspace? | Any workspace with a pane **at or beneath** the project root. A pane *above* it never counts — otherwise a workspace opened at `~` would match every project on the machine. |
 | Which of several? | The focused one. If none is focused it refuses and lists them, rather than guessing. |
 | What name? | The branch, unless that is `main`/`master`, in which case the project directory name. `-2`, `-3`… appended if taken. |
+| No workspace at all? | Whichever layout in `~/.herdr-spreader/` declares this project root, applied via `spread <name>`. If there is no layout, it stops and says so. |
 
 Run from inside a herdr pane, herdr already exports `HERDR_SOCKET_PATH`, so the right session
 is targeted with no inference at all.
@@ -48,10 +56,14 @@ is targeted with no inference at all.
 
 ```bash
 bun install
-bun test          # 69 tests, no herdr server required — they run against captured fixtures
+bun test          # 105 tests, no herdr server required — they run against captured fixtures
 bun run typecheck
 bun run build     # compiles dist/herdr-tab-new, a standalone binary
+bun run check:live # OPT-IN: creates a real tab, asserts, closes it again
 ```
+
+`bun test` never touches your live herdr. `check:live` deliberately does, and is kept out of
+the normal suite so a routine run — including one an agent starts — can never create tabs.
 
 All resolution logic lives in `src/resolve/` as pure functions over data. Only `src/system.ts`
 touches the outside world, which is why the tests need neither a running herdr nor a git repo.
@@ -63,5 +75,8 @@ share one directory, which is what the ambiguity handling is tested against.
 
 - **Build with `bun run build`, not `bun index.ts`.** The compiled binary has no runtime
   dependencies, so it behaves identically in a shell where mise, bun or node are absent.
+- **`tab create` returns a pane before its shell is ready.** herdr's `--timeout` covers agent
+  readiness *after* launch, not the shell reaching a prompt, so `startAgent` retries that one
+  specific rejection until the shell appears.
 - **The tab name is a starting point, not a contract.** herdr plugins exist that rename tabs
   from the agent's own conversation; nothing should depend on the name this tool sets.

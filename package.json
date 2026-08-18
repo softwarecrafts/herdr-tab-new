@@ -16,6 +16,7 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "build": "bun build ./index.ts --compile --outfile dist/herdr-tab-new",
-    "check": "bun run typecheck && bun test"
+    "check": "bun run typecheck && bun test",
+    "check:live": "bun run scripts/check-live.ts"
   }
 }

@@ -10,14 +10,18 @@ import {
   UnknownWorkspaceError,
 } from "./src/resolve/workspace.ts";
 import { generateLabel } from "./src/resolve/label.ts";
-import { layoutStatusFor } from "./src/spreader/layout.ts";
+import { layoutStatusFor, parseLayouts } from "./src/spreader/layout.ts";
 import {
+  formatAgentFailed,
   formatAmbiguous,
+  formatCreated,
   formatNoMatch,
   formatPlan,
+  type CreatedSummary,
   type ResolvedPlan,
 } from "./src/cli/output.ts";
 import {
+  createTab,
   gitBranch,
   gitToplevel,
   home,
@@ -26,7 +30,10 @@ import {
   listSessions,
   listTabs,
   listWorkspaces,
-  readSpreaderConfig,
+  readLayoutFiles,
+  runSpread,
+  spreadAvailable,
+  startAgent,
 } from "./src/system.ts";
 
 export const EXIT = {
@@ -47,7 +54,8 @@ Options:
   --workspace <id|label> Use this workspace instead of inferring one.
   -h, --help             Show this help.
 
-Milestone 1 resolves and reports only; it never changes herdr's state.
+If no live workspace matches the project, the matching herdr-spreader layout is
+applied with \`spread\` and resolution is retried.
 
 Exit codes:
   0 ok   1 usage   2 herdr unavailable   3 no matching workspace   4 ambiguous`;
@@ -85,7 +93,15 @@ export function parseArgs(argv: string[]): Args {
   return args;
 }
 
-function resolvePlan(args: Args): ResolvedPlan {
+function layoutFor(projectRoot: string) {
+  const files = readLayoutFiles();
+  return layoutStatusFor(
+    files === null ? null : parseLayouts(files, home()),
+    projectRoot,
+  );
+}
+
+function buildPlan(args: Args): ResolvedPlan {
   const { socketPath, sessionName } = resolveSocket(process.env, listSessions());
 
   const fromZed = process.env.ZED_WORKTREE_ROOT;
@@ -101,33 +117,95 @@ function resolvePlan(args: Args): ResolvedPlan {
         ? "git"
         : "cwd";
 
-  const candidates = matchWorkspaces(listPanes(socketPath), projectRoot);
   const workspace = chooseWorkspace(
-    candidates,
+    matchWorkspaces(listPanes(socketPath), projectRoot),
     listWorkspaces(socketPath),
     args.workspace,
     projectRoot,
   );
 
-  const existingLabels = listTabs(socketPath, workspace.workspace_id).map(
-    (t) => t.label,
-  );
+  const branch = gitBranch(projectRoot);
 
   return {
     sessionName,
     socketPath,
     workspace,
     label: generateLabel({
-      branch: gitBranch(projectRoot),
+      branch,
       projectRoot,
-      existingLabels,
+      existingLabels: listTabs(socketPath, workspace.workspace_id).map(
+        (t) => t.label,
+      ),
       requested: args.name,
     }),
     projectRoot,
-    branch: gitBranch(projectRoot),
+    branch,
     rootSource,
     agentKind: "claude",
   };
+}
+
+/**
+ * Resolve, and if nothing matched, try once to build the workspace from its
+ * layout before giving up. `spread` is idempotent, so the retry cannot end up
+ * with two copies of a workspace.
+ */
+function resolveOrSpread(args: Args): ResolvedPlan {
+  try {
+    return buildPlan(args);
+  } catch (err) {
+    if (!(err instanceof NoWorkspaceMatchError) || args.dryRun) throw err;
+
+    const layout = layoutFor(err.projectRoot);
+    if (layout.kind !== "declared" || !spreadAvailable()) throw err;
+
+    console.error(`No workspace open for this project — running: spread ${layout.file}`);
+    runSpread(layout.file);
+
+    try {
+      return buildPlan(args);
+    } catch (retryErr) {
+      if (retryErr instanceof NoWorkspaceMatchError) {
+        throw Object.assign(retryErr, { spreadAttempted: true });
+      }
+      throw retryErr;
+    }
+  }
+}
+
+function create(plan: ResolvedPlan): number {
+  const { tab, rootPane } = createTab(plan.socketPath, {
+    workspaceId: plan.workspace.workspace_id,
+    cwd: plan.projectRoot,
+    label: plan.label,
+  });
+
+  const summary: CreatedSummary = {
+    label: plan.label,
+    tabId: tab.tab_id,
+    paneId: rootPane.pane_id,
+    workspaceLabel: plan.workspace.label,
+    workspaceId: plan.workspace.workspace_id,
+    projectRoot: plan.projectRoot,
+    agentKind: plan.agentKind,
+  };
+
+  try {
+    startAgent(plan.socketPath, {
+      name: plan.label,
+      kind: plan.agentKind,
+      paneId: rootPane.pane_id,
+    });
+  } catch (err) {
+    // The tab is real and useful even without the agent, so it stays.
+    console.error(
+      formatAgentFailed({ ...summary, reason: (err as Error).message }),
+    );
+    return EXIT.herdrUnavailable;
+  }
+
+  console.log(formatCreated(summary));
+  return EXIT.ok;
 }
 
 export function main(argv: string[]): number {
@@ -145,18 +223,23 @@ export function main(argv: string[]): number {
   }
 
   try {
-    console.log(formatPlan(resolvePlan(args)));
-    if (!args.dryRun) {
-      console.log("\nCreating the tab arrives in milestone 2 — nothing was changed.");
+    const plan = resolveOrSpread(args);
+
+    if (args.dryRun) {
+      console.log(formatPlan(plan));
+      return EXIT.ok;
     }
-    return EXIT.ok;
+
+    return create(plan);
   } catch (err) {
     if (err instanceof NoWorkspaceMatchError) {
       console.error(
-        formatNoMatch(
-          err.projectRoot,
-          layoutStatusFor(readSpreaderConfig(), err.projectRoot, home()),
-        ),
+        formatNoMatch(err.projectRoot, {
+          layout: layoutFor(err.projectRoot),
+          spreadAvailable: spreadAvailable(),
+          spreadAttempted: (err as { spreadAttempted?: boolean })
+            .spreadAttempted,
+        }),
       );
       return EXIT.noWorkspace;
     }

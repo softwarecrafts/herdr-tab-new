@@ -67,37 +67,55 @@ export function formatPlan(plan: ResolvedPlan): string {
   ].join("\n");
 }
 
+export type NoMatchContext = {
+  layout: LayoutStatus;
+  /** Whether `spread` is on PATH — only relevant when a layout exists. */
+  spreadAvailable: boolean;
+  /** Whether we already ran `spread` and still found no workspace. */
+  spreadAttempted?: boolean;
+};
+
 /**
- * Shown when no live workspace has a pane in this project. The layout status
- * tells the reader which situation they are in: spreader can build this
- * workspace for them (milestone 2 will), or nothing can and they need to open
- * the workspace themselves.
+ * Shown when no live workspace has a pane in this project.
+ *
+ * There are four genuinely different situations here and conflating them wastes
+ * the reader's time: a layout exists and we could build it, a layout exists but
+ * `spread` is missing, we tried and it did not work, or there is nothing to
+ * build at all. Each gets its own next step.
  */
 export function formatNoMatch(
   projectRoot: string,
-  layout: LayoutStatus,
+  { layout, spreadAvailable, spreadAttempted }: NoMatchContext,
 ): string {
-  const lines = [
-    `No live herdr workspace has a pane in ${projectRoot}.`,
-    "",
-  ];
+  const lines = [`No live herdr workspace has a pane in ${projectRoot}.`, ""];
 
-  if (layout.kind === "declared") {
+  if (layout.kind === "declared" && spreadAttempted) {
     lines.push(
-      `herdr-spreader declares a layout for this project ("${layout.name}").`,
-      "Milestone 2 will bring that workspace up automatically. For now, run:",
-      "  herdr-spreader apply",
+      `\`spread ${layout.file}\` ran, but a workspace for this project did not`,
+      "appear afterwards. Check the layout, then try again:",
+      `  spread -n ${layout.file}    # show the plan without building it`,
+    );
+  } else if (layout.kind === "declared" && !spreadAvailable) {
+    lines.push(
+      `herdr-spreader has a layout for this project ("${layout.file}"), but`,
+      "`spread` is not on PATH, so it cannot be applied automatically. Run:",
+      `  spread ${layout.file}`,
+    );
+  } else if (layout.kind === "declared") {
+    lines.push(
+      `herdr-spreader has a layout for this project ("${layout.file}"). Run:`,
+      `  spread ${layout.file}`,
     );
   } else if (layout.kind === "absent") {
     lines.push(
-      "herdr-spreader has no layout for this project either, so there is",
-      "nothing to bring up. Open a herdr workspace here, or add a layout to:",
-      "  ~/.config/herdr/plugins/config/herdr-spreader/config.yaml",
+      "There is no layout for this project either, so there is nothing to",
+      "bring up. Open a herdr workspace here, or add a layout to:",
+      "  ~/.herdr-spreader/",
     );
   } else {
     lines.push(
-      "herdr-spreader's config could not be read, so it is not known whether",
-      "a layout exists for this project.",
+      "The layout directory (~/.herdr-spreader/) could not be read, so it is",
+      "not known whether a layout exists for this project.",
     );
   }
 
@@ -130,4 +148,44 @@ export function formatAmbiguous(
   );
 
   return lines.join("\n");
+}
+
+export type CreatedSummary = {
+  label: string;
+  tabId: string;
+  paneId: string;
+  workspaceLabel: string;
+  workspaceId: string;
+  projectRoot: string;
+  agentKind: string;
+};
+
+/** The success case: the agent is up and waiting for you. */
+export function formatCreated(c: CreatedSummary): string {
+  return [
+    `Started ${c.agentKind} in tab "${c.label}" (${c.tabId}), workspace ${c.workspaceLabel} (${c.workspaceId})`,
+    "",
+    `  directory  ${c.projectRoot}`,
+    `  pane       ${c.paneId}`,
+  ].join("\n");
+}
+
+/**
+ * The tab exists but the agent never came up.
+ *
+ * The tab is deliberately left open: it is a shell at the right directory, which
+ * is still useful, and closing it could destroy something. herdr's own reason is
+ * passed through rather than guessed at.
+ */
+export function formatAgentFailed(
+  c: CreatedSummary & { reason: string },
+): string {
+  return [
+    `Created tab "${c.label}" (${c.tabId}) in workspace ${c.workspaceLabel} (${c.workspaceId}),`,
+    `but ${c.agentKind} did not start: ${c.reason}`,
+    "",
+    `The tab has been left open at a shell prompt in ${c.projectRoot}.`,
+    `Start ${c.agentKind} there yourself, or look into it with:`,
+    `  herdr agent explain ${c.paneId}`,
+  ].join("\n");
 }

@@ -30,3 +30,11 @@ export type Session = {
   socket_path: string;
   session_dir: string;
 };
+
+export type AgentInfo = {
+  agent: string;
+  pane_id: string;
+  tab_id?: string;
+  workspace_id?: string;
+  agent_status: string;
+};
