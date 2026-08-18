@@ -1,0 +1,39 @@
+import { describe, expect, test } from "bun:test";
+import { buildHerdrInvocation } from "../../src/herdr/client.ts";
+
+describe("buildHerdrInvocation", () => {
+  test("puts the resolved socket in the environment, not on the command line", () => {
+    // herdr has no --socket flag; HERDR_SOCKET_PATH is the only lever that
+    // actually redirects it to a named session.
+    const { cmd, env } = buildHerdrInvocation(
+      ["workspace", "list"],
+      "/Users/andrew/.config/herdr/sessions/hamilton/herdr.sock",
+      { PATH: "/usr/bin" },
+    );
+
+    expect(cmd).toEqual(["herdr", "workspace", "list"]);
+    expect(env.HERDR_SOCKET_PATH).toBe(
+      "/Users/andrew/.config/herdr/sessions/hamilton/herdr.sock",
+    );
+  });
+
+  test("keeps the surrounding environment intact", () => {
+    const { env } = buildHerdrInvocation(["pane", "list"], "/tmp/s.sock", {
+      PATH: "/usr/bin",
+      HOME: "/Users/andrew",
+    });
+
+    expect(env.PATH).toBe("/usr/bin");
+    expect(env.HOME).toBe("/Users/andrew");
+  });
+
+  test("drops HERDR_SESSION so it cannot fight the socket we chose", () => {
+    // The herdr CLI ignores HERDR_SESSION, but leaving it set is a trap for
+    // anything downstream that does read it.
+    const { env } = buildHerdrInvocation(["pane", "list"], "/tmp/s.sock", {
+      HERDR_SESSION: "hamilton",
+    });
+
+    expect(env.HERDR_SESSION).toBeUndefined();
+  });
+});
