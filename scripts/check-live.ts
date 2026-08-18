@@ -9,18 +9,30 @@
  *
  *   bun run check:live
  */
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { resolveSocket } from "../src/resolve/socket.ts";
 import {
+  appendRecord,
   closeTab,
   createTab,
+  listAllTabs,
   listSessions,
   listTabs,
+  readRecords,
   runHerdr,
   startAgent,
 } from "../src/system.ts";
+import { annotateLiveness } from "../src/state/record.ts";
 import type { AgentInfo, Workspace } from "../src/herdr/types.ts";
 
 const LABEL = `check-live-${process.pid}`;
+
+// Records go to a throwaway file so a live check never adds cruft to the real
+// session's state.
+const stateDir = mkdtempSync(join(tmpdir(), "herdr-tab-new-check-"));
+process.env.HERDR_TAB_NEW_STATE = join(stateDir, "tabs.jsonl");
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -76,11 +88,46 @@ function main(): number {
 
     assert(started !== undefined, "an agent is running in the new pane");
     assert(started?.agent === "claude", "the agent is claude");
+
+    appendRecord(socketPath, {
+      session: sessionName,
+      workspaceId: target.workspace_id,
+      workspaceLabel: target.label,
+      tabId: tab.tab_id,
+      label: LABEL,
+      directory: process.cwd(),
+      agentKind: "claude",
+      agentStarted: true,
+      worktree: null,
+      created: new Date().toISOString(),
+    });
+
+    const recorded = readRecords(socketPath);
+    assert(
+      recorded.some((r) => r.tabId === tab.tab_id),
+      "the tab was recorded",
+    );
+    assert(
+      annotateLiveness(recorded, listAllTabs(socketPath).map((t) => t.tab_id))
+        .find((r) => r.tabId === tab.tab_id)?.live === true,
+      "the record reads as live while the tab exists",
+    );
   } finally {
     closeTab(socketPath, tab.tab_id);
     const after = listTabs(socketPath, target.workspace_id).map((t) => t.label);
     assert(!after.includes(LABEL), "the tab was cleaned up");
     assert(after.length === before, "the workspace is back to its original tabs");
+
+    const live = listAllTabs(socketPath).map((t) => t.tab_id);
+    const stale = annotateLiveness(readRecords(socketPath), live).find(
+      (r) => r.tabId === tab.tab_id,
+    );
+    assert(
+      stale !== undefined && !stale.live,
+      "the record reads as gone once the tab is closed",
+    );
+
+    rmSync(stateDir, { recursive: true, force: true });
   }
 
   console.log("\nLive check passed.");

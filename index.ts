@@ -10,27 +10,38 @@ import {
   UnknownWorkspaceError,
 } from "./src/resolve/workspace.ts";
 import { generateLabel } from "./src/resolve/label.ts";
+import {
+  assertKnownKind,
+  DEFAULT_KIND,
+  UnknownAgentKindError,
+} from "./src/agent/kinds.ts";
+import { annotateLiveness } from "./src/state/record.ts";
 import { layoutStatusFor, parseLayouts } from "./src/spreader/layout.ts";
 import {
   formatAgentFailed,
   formatAmbiguous,
   formatCreated,
+  formatList,
   formatNoMatch,
   formatPlan,
   type CreatedSummary,
   type ResolvedPlan,
 } from "./src/cli/output.ts";
 import {
+  agentKinds,
+  appendRecord,
   createTab,
   gitBranch,
   gitToplevel,
   home,
   isDirectory,
+  listAllTabs,
   listPanes,
   listSessions,
   listTabs,
   listWorkspaces,
   readLayoutFiles,
+  readRecords,
   runSpread,
   spreadAvailable,
   startAgent,
@@ -52,6 +63,8 @@ Usage:
 Options:
   --dry-run              Show what would be created without creating it.
   --workspace <id|label> Use this workspace instead of inferring one.
+  --kind <agent>         Agent to start (default: claude).
+  --list                 List the tabs this tool created in this session.
   -h, --help             Show this help.
 
 If no live workspace matches the project, the matching herdr-spreader layout is
@@ -63,17 +76,33 @@ Exit codes:
 type Args = {
   help: boolean;
   dryRun: boolean;
+  list: boolean;
+  kind: string;
   workspace?: string;
   name?: string;
 };
 
 export function parseArgs(argv: string[]): Args {
-  const args: Args = { help: false, dryRun: false };
+  const args: Args = {
+    help: false,
+    dryRun: false,
+    list: false,
+    kind: DEFAULT_KIND,
+  };
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     if (arg === "-h" || arg === "--help") args.help = true;
     else if (arg === "--dry-run") args.dryRun = true;
+    else if (arg === "--list") args.list = true;
+    else if (arg === "--kind") {
+      const value = argv[i + 1];
+      if (!value || value.startsWith("-")) {
+        throw new Error("--kind needs an agent name");
+      }
+      args.kind = value;
+      i += 1;
+    }
     else if (arg === "--workspace") {
       const value = argv[i + 1];
       if (!value || value.startsWith("-")) {
@@ -141,7 +170,7 @@ function buildPlan(args: Args): ResolvedPlan {
     projectRoot,
     branch,
     rootSource,
-    agentKind: "claude",
+    agentKind: args.kind,
   };
 }
 
@@ -173,6 +202,16 @@ function resolveOrSpread(args: Args): ResolvedPlan {
   }
 }
 
+function list(): number {
+  const { socketPath, sessionName } = resolveSocket(process.env, listSessions());
+  const liveTabIds = listAllTabs(socketPath).map((t) => t.tab_id);
+
+  console.log(
+    formatList(annotateLiveness(readRecords(socketPath), liveTabIds), sessionName),
+  );
+  return EXIT.ok;
+}
+
 function create(plan: ResolvedPlan): number {
   const { tab, rootPane } = createTab(plan.socketPath, {
     workspaceId: plan.workspace.workspace_id,
@@ -190,6 +229,22 @@ function create(plan: ResolvedPlan): number {
     agentKind: plan.agentKind,
   };
 
+  // Recorded whatever the agent does: the tab exists either way, and milestone
+  // 5's teardown can only clean up what it knows about.
+  const record = (agentStarted: boolean) =>
+    appendRecord(plan.socketPath, {
+      session: plan.sessionName,
+      workspaceId: plan.workspace.workspace_id,
+      workspaceLabel: plan.workspace.label,
+      tabId: tab.tab_id,
+      label: plan.label,
+      directory: plan.projectRoot,
+      agentKind: plan.agentKind,
+      agentStarted,
+      worktree: null,
+      created: new Date().toISOString(),
+    });
+
   try {
     startAgent(plan.socketPath, {
       name: plan.label,
@@ -198,12 +253,14 @@ function create(plan: ResolvedPlan): number {
     });
   } catch (err) {
     // The tab is real and useful even without the agent, so it stays.
+    record(false);
     console.error(
       formatAgentFailed({ ...summary, reason: (err as Error).message }),
     );
     return EXIT.herdrUnavailable;
   }
 
+  record(true);
   console.log(formatCreated(summary));
   return EXIT.ok;
 }
@@ -223,6 +280,12 @@ export function main(argv: string[]): number {
   }
 
   try {
+    if (args.list) return list();
+
+    // Before anything is created: herdr only rejects a bad kind at agent start,
+    // by which point a tab exists.
+    assertKnownKind(args.kind, agentKinds());
+
     const plan = resolveOrSpread(args);
 
     if (args.dryRun) {
@@ -246,6 +309,10 @@ export function main(argv: string[]): number {
     if (err instanceof AmbiguousWorkspaceError) {
       console.error(formatAmbiguous(err.projectRoot, err.candidates));
       return EXIT.ambiguous;
+    }
+    if (err instanceof UnknownAgentKindError) {
+      console.error((err as Error).message);
+      return EXIT.usage;
     }
     if (err instanceof UnknownWorkspaceError) {
       console.error((err as Error).message);

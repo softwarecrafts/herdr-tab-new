@@ -1,5 +1,6 @@
 import type { LayoutStatus } from "../spreader/layout.ts";
 import type { Workspace } from "../herdr/types.ts";
+import type { AnnotatedRecord } from "../state/record.ts";
 
 /**
  * Everything milestone 1 resolved. This is the whole answer to "what would you
@@ -188,4 +189,43 @@ export function formatAgentFailed(
     `Start ${c.agentKind} there yourself, or look into it with:`,
     `  herdr agent explain ${c.paneId}`,
   ].join("\n");
+}
+
+/**
+ * The record of what this tool has created in the current session.
+ *
+ * "gone" entries are kept visible rather than filtered out: they are precisely
+ * what teardown will have to reconcile, and hiding them would make the listing
+ * look tidier than the state actually is.
+ */
+export function formatList(
+  rows: AnnotatedRecord[],
+  sessionName: string,
+): string {
+  if (rows.length === 0) {
+    return `No tabs recorded for session "${sessionName}".`;
+  }
+
+  const newestFirst = [...rows].sort((a, b) =>
+    b.created.localeCompare(a.created),
+  );
+
+  const live = newestFirst.filter((r) => r.live).length;
+  const labelWidth = Math.max(...newestFirst.map((r) => r.label.length));
+  const kindWidth = Math.max(...newestFirst.map((r) => r.agentKind.length));
+
+  const lines = [
+    `${live} live, ${newestFirst.length - live} gone — session "${sessionName}"`,
+    "",
+  ];
+
+  for (const r of newestFirst) {
+    const note = r.agentStarted ? "" : "  (no agent)";
+    lines.push(
+      `  ${r.live ? "live" : "gone"}  ${r.label.padEnd(labelWidth)}  ` +
+        `${r.tabId.padEnd(7)}  ${r.agentKind.padEnd(kindWidth)}  ${r.directory}${note}`,
+    );
+  }
+
+  return lines.join("\n");
 }

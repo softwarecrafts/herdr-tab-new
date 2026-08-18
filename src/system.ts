@@ -1,6 +1,12 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   buildHerdrInvocation,
   HerdrError,
@@ -9,6 +15,13 @@ import {
 } from "./herdr/client.ts";
 import type { Pane, Session, Tab, Workspace } from "./herdr/types.ts";
 import { LAYOUT_DIR, type LayoutFile } from "./spreader/layout.ts";
+import { FALLBACK_KINDS, parseAgentKinds } from "./agent/kinds.ts";
+import {
+  parseRecords,
+  stateFileFor,
+  type TabRecord,
+  toRecordLine,
+} from "./state/record.ts";
 import {
   agentStartArgs,
   type AgentStarted,
@@ -200,4 +213,41 @@ export const home = homedir;
 
 export function closeTab(socketPath: string, tabId: string): void {
   runHerdr(["tab", "close", tabId], socketPath);
+}
+
+/**
+ * The kinds this herdr can start, read from its own help so a herdr upgrade
+ * that adds an agent works without a code change. Falls back to the baked-in
+ * list only if the help stops being parseable.
+ */
+export function agentKinds(): string[] {
+  const { stdout, stderr } = capture(["herdr", "agent", "start", "--help"]);
+  return parseAgentKinds(`${stdout}${stderr}`) ?? FALLBACK_KINDS;
+}
+
+/** Every live tab in the session, used to tell recorded tabs from vanished ones. */
+export const listAllTabs = (socketPath: string): Tab[] =>
+  (runHerdr(["tab", "list"], socketPath) as { tabs: Tab[] }).tabs;
+
+/**
+ * Append one record. O_APPEND makes a single short write atomic, so two runs at
+ * once cannot lose each other's records — which a whole-file rewrite would.
+ */
+export function appendRecord(socketPath: string, record: TabRecord): void {
+  const path = stateFileFor(socketPath, process.env.HERDR_TAB_NEW_STATE);
+  mkdirSync(dirname(path), { recursive: true });
+  appendFileSync(path, toRecordLine(record), "utf8");
+}
+
+export function readRecords(socketPath: string): TabRecord[] {
+  try {
+    return parseRecords(
+      readFileSync(
+        stateFileFor(socketPath, process.env.HERDR_TAB_NEW_STATE),
+        "utf8",
+      ),
+    );
+  } catch {
+    return [];
+  }
 }
