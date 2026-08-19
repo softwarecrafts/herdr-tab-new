@@ -415,7 +415,7 @@ function create(plan: ResolvedPlan): number {
 
   if (shouldAttach({ env: process.env, mode: "create", agentStarted: true })) {
     // Does not return: this terminal becomes the session.
-    attachToPane(plan.socketPath, rootPane.pane_id);
+    attachToPane(plan.socketPath, rootPane.pane_id, plan.label);
   }
 
   return EXIT.ok;
@@ -517,7 +517,7 @@ function createInWorktree(args: Args): number {
       agentStarted: true,
     })
   ) {
-    attachToPane(socketPath, result.rootPane.pane_id);
+    attachToPane(socketPath, result.rootPane.pane_id, label);
   }
 
   return EXIT.ok;

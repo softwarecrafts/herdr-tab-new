@@ -104,6 +104,31 @@ in every pane it spawns.
 Nothing is attached for `--dry-run`, `--list`, `--teardown`, or when the agent failed to start —
 there would be nothing to attach to.
 
+Two things that were only learned by trying them:
+
+- **`--takeover` is required, not optional.** Without it the attach connects but does not own
+  input: nothing you type reaches the agent, and the prefix key is not processed either.
+- **Zed swallows herdr's `ctrl-b` prefix**, binding it to `workspace::ToggleLeftDock`, so
+  `ctrl-b q` never reaches the attach and you cannot detach. Fix it in
+  `~/.config/zed/keymap.json`:
+
+  ```json
+  [
+    {
+      "context": "Terminal",
+      "bindings": { "ctrl-b": ["terminal::SendKeystroke", "ctrl-b"] }
+    }
+  ]
+  ```
+
+  Closing the Zed terminal tab also works: the agent lives in the herdr server, not the client,
+  so it survives.
+
+**While a small terminal is attached, herdr renders that pane at the attached terminal's size.**
+Switch to herdr mid-attach and the pane appears clipped into a corner of the window. That is
+inherent to viewing one agent terminal through two differently-sized clients — detach and herdr
+renders it full size again.
+
 The `zed` CLI can only open paths, so replacing this process is the only way to get the session
 into Zed. That is why the terminal is consumed rather than a new one being opened.
 
@@ -159,7 +184,7 @@ the reason every other write is an append.
 
 ```bash
 bun install
-bun test          # 242 tests, no herdr server required — they run against captured fixtures
+bun test          # 246 tests, no herdr server required — they run against captured fixtures
 bun run typecheck
 bun run build     # compiles dist/herdr-tab-new, a standalone binary
 bun run check:live # OPT-IN: creates a real tab, asserts, closes it again

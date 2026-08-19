@@ -18,7 +18,7 @@ import {
 } from "./herdr/client.ts";
 import type { Pane, Session, Tab, Workspace } from "./herdr/types.ts";
 import { LAYOUT_DIR, type LayoutFile } from "./spreader/layout.ts";
-import { attachArgs } from "./cli/attach.ts";
+import { attachArgs, titleEscape } from "./cli/attach.ts";
 import { FALLBACK_KINDS, parseAgentKinds } from "./agent/kinds.ts";
 import {
   parseWorktreeCreated,
@@ -353,7 +353,16 @@ export function listAgentNames(socketPath: string): string[] {
  * the terminal, and we exit with whatever status it exits with. This does not
  * return: by design the process you started *becomes* the session.
  */
-export function attachToPane(socketPath: string, paneId: string): never {
+export function attachToPane(
+  socketPath: string,
+  paneId: string,
+  label = "",
+): never {
+  // Named before handing over, so the tab is not left called "herdr-tab-new".
+  // The agent's own title replaces this as soon as it paints one.
+  const title = titleEscape(label);
+  if (title) process.stdout.write(title);
+
   const { cmd, env } = buildHerdrInvocation(
     attachArgs(paneId),
     socketPath,
