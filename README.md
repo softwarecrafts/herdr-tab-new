@@ -142,7 +142,7 @@ the reason every other write is an append.
 
 ```bash
 bun install
-bun test          # 208 tests, no herdr server required — they run against captured fixtures
+bun test          # 232 tests, no herdr server required — they run against captured fixtures
 bun run typecheck
 bun run build     # compiles dist/herdr-tab-new, a standalone binary
 bun run check:live # OPT-IN: creates a real tab, asserts, closes it again
@@ -165,5 +165,8 @@ share one directory, which is what the ambiguity handling is tested against.
 - **`tab create` returns a pane before its shell is ready.** herdr's `--timeout` covers agent
   readiness *after* launch, not the shell reaching a prompt, so `startAgent` retries that one
   specific rejection until the shell appears.
+- **The tab label and the agent name are not the same string.** herdr allows `/`, uppercase and
+  any length in a tab label but requires `^[a-z][a-z0-9_-]{0,31}$` for an agent name. The label
+  stays verbatim; the agent name is derived from it and de-duplicated against live agents.
 - **The tab name is a starting point, not a contract.** herdr plugins exist that rename tabs
   from the agent's own conversation; nothing should depend on the name this tool sets.

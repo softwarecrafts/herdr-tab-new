@@ -10,6 +10,7 @@ import {
   UnknownWorkspaceError,
 } from "./src/resolve/workspace.ts";
 import { generateLabel } from "./src/resolve/label.ts";
+import { toAgentName } from "./src/agent/name.ts";
 import {
   assertKnownKind,
   DEFAULT_KIND,
@@ -46,6 +47,7 @@ import {
   gitToplevel,
   home,
   isDirectory,
+  listAgentNames,
   listAllTabs,
   listPanes,
   listSessions,
@@ -344,7 +346,9 @@ function startAndRecord(t: StartTarget): { started: boolean; reason: string } {
 
   try {
     startAgent(t.socketPath, {
-      name: t.label,
+      // Not t.label: herdr allows `/`, uppercase and any length in a tab label
+      // but not in an agent name, so the name is derived rather than reused.
+      name: toAgentName(t.label, listAgentNames(t.socketPath)),
       kind: t.agentKind,
       paneId: t.paneId,
     });

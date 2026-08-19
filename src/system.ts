@@ -336,3 +336,11 @@ export function writeRecords(socketPath: string, records: TabRecord[]): void {
   writeFileSync(temp, serializeRecords(records), "utf8");
   renameSync(temp, path);
 }
+
+/** Names of every live agent, so a new one can avoid colliding with them. */
+export function listAgentNames(socketPath: string): string[] {
+  const { agents } = runHerdr(["agent", "list"], socketPath) as {
+    agents: { name?: string }[];
+  };
+  return agents.map((a) => a.name).filter((n): n is string => Boolean(n));
+}
