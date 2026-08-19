@@ -9,7 +9,7 @@
  *
  *   bun run check:live
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveSocket } from "../src/resolve/socket.ts";
@@ -18,6 +18,7 @@ import {
   closeTab,
   createWorktree,
   gitToplevel,
+  isWorktreeDirty,
   removeWorktree,
   createTab,
   listAllTabs,
@@ -28,6 +29,7 @@ import {
   startAgent,
 } from "../src/system.ts";
 import { annotateLiveness } from "../src/state/record.ts";
+import { planTeardown } from "../src/state/teardown.ts";
 import type { AgentInfo, Workspace } from "../src/herdr/types.ts";
 
 const LABEL = `check-live-${process.pid}`;
@@ -157,6 +159,43 @@ function worktreeCheck(socketPath: string): void {
   const result = createWorktree(socketPath, { projectRoot, branch });
 
   try {
+    // The property teardown exists to guarantee: uncommitted work is never
+    // removed. Written before the clean-worktree assertions so a failure here
+    // still reaches the cleanup in `finally`.
+    const stray = join(result.worktreePath, "UNCOMMITTED.txt");
+    writeFileSync(stray, "work that must not be lost\n", "utf8");
+    assert(isWorktreeDirty(result.worktreePath), "an untracked file makes it dirty");
+
+    const dirtyPlan = planTeardown({
+      records: [
+        {
+          session: "check",
+          workspaceId: result.workspace.workspace_id,
+          workspaceLabel: result.workspace.label,
+          tabId: result.tab.tab_id,
+          label: branch,
+          directory: result.worktreePath,
+          agentKind: "claude",
+          agentStarted: false,
+          worktree: result.worktreePath,
+          created: new Date().toISOString(),
+        },
+      ],
+      liveTabIds: [result.tab.tab_id],
+      dirtyWorktrees: [result.worktreePath],
+    });
+    assert(
+      dirtyPlan.removeWorktrees.length === 0 && dirtyPlan.skipped.length === 1,
+      "teardown refuses a worktree with uncommitted work",
+    );
+    assert(
+      dirtyPlan.prune.length === 0,
+      "the skipped worktree's record is kept, not forgotten",
+    );
+
+    rmSync(stray);
+    assert(!isWorktreeDirty(result.worktreePath), "removing it makes it clean again");
+
     assert(result.worktreePath.length > 0, "herdr reported a worktree path");
     assert(!result.alreadyOpen, "a fresh worktree is not already open");
     assert(

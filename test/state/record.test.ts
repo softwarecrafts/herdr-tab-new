@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   annotateLiveness,
   parseRecords,
+  serializeRecords,
   stateFileFor,
   type TabRecord,
   toRecordLine,
@@ -135,5 +136,30 @@ describe("stateFileFor with an override", () => {
     expect(stateFileFor("/Users/andrew/.config/herdr/herdr.sock", "")).toBe(
       "/Users/andrew/.config/herdr/herdr-tab-new/tabs.jsonl",
     );
+  });
+});
+
+describe("serializeRecords", () => {
+  test("round-trips a whole file through the rewrite", () => {
+    const records = [record({ tabId: "w2:t2" }), record({ tabId: "w2:t3" })];
+
+    expect(parseRecords(serializeRecords(records))).toEqual(records);
+  });
+
+  test("produces one line per record", () => {
+    const text = serializeRecords([record(), record({ tabId: "w2:t3" })]);
+
+    expect(text.trimEnd().split("\n")).toHaveLength(2);
+  });
+
+  test("writes an empty file when everything was pruned", () => {
+    // Must be readable back as "no records", not as a corrupt file.
+    expect(parseRecords(serializeRecords([]))).toEqual([]);
+  });
+
+  test("ends with a newline, so a later append starts on its own line", () => {
+    // The file goes back to being appended to after a rewrite; without the
+    // trailing newline the next append would corrupt the last record.
+    expect(serializeRecords([record()]).endsWith("\n")).toBe(true);
   });
 });

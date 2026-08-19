@@ -1,9 +1,12 @@
 import {
   appendFileSync,
+  existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -26,6 +29,7 @@ import {
 } from "./herdr/worktree.ts";
 import {
   parseRecords,
+  serializeRecords,
   stateFileFor,
   type TabRecord,
   toRecordLine,
@@ -274,9 +278,61 @@ export function openWorktree(
   return parseWorktreeOpened(runHerdr(worktreeOpenArgs(input), socketPath));
 }
 
-export function removeWorktree(socketPath: string, workspaceId: string): void {
-  runHerdr(
-    ["worktree", "remove", "--workspace", workspaceId, "--force"],
-    socketPath,
-  );
+/**
+ * `force` is opt-in. Teardown checks for uncommitted work itself and then calls
+ * this without forcing, so herdr's own refusal is a second line of defence
+ * rather than something we have already overridden.
+ */
+export function removeWorktree(
+  socketPath: string,
+  workspaceId: string,
+  force = false,
+): void {
+  const args = ["worktree", "remove", "--workspace", workspaceId];
+  if (force) args.push("--force");
+  runHerdr(args, socketPath);
+}
+
+/**
+ * Does this worktree hold work that removing it would lose?
+ *
+ * Anything `git status --porcelain` reports counts, untracked files included —
+ * matching git's own `worktree remove`, and because a new file an agent wrote
+ * but never committed is exactly what is worth protecting.
+ *
+ * A path that no longer exists is not dirty: there is nothing there to lose.
+ */
+export function isWorktreeDirty(path: string): boolean {
+  if (!existsSync(path)) return false;
+
+  const { ok, stdout } = capture([
+    "git",
+    "-C",
+    path,
+    "status",
+    "--porcelain",
+    "--untracked-files=normal",
+  ]);
+
+  // If git cannot answer, assume there is something to lose.
+  if (!ok) return true;
+  return stdout.trim().length > 0;
+}
+
+/**
+ * Replace the record file wholesale, which teardown needs in order to prune.
+ *
+ * Written to a temp file and renamed, so a reader never sees a half-written
+ * file. Known cost: this is the one operation that is not append-only, so a
+ * record appended between the read and the rename is lost. That window is
+ * milliseconds, during a command run deliberately — but it is real, and it is
+ * why every other write in this tool is an append.
+ */
+export function writeRecords(socketPath: string, records: TabRecord[]): void {
+  const path = stateFileFor(socketPath, process.env.HERDR_TAB_NEW_STATE);
+  mkdirSync(dirname(path), { recursive: true });
+
+  const temp = `${path}.${process.pid}.tmp`;
+  writeFileSync(temp, serializeRecords(records), "utf8");
+  renameSync(temp, path);
 }

@@ -20,6 +20,8 @@ herdr-tab-new [name] [options]
   -w, --worktree         Isolate the session in its own git worktree.
   --branch <name>        Branch for --worktree (default: the tab name).
   --list                 List the tabs this tool created in this session.
+  --teardown [name]      Close sessions this tool created (all, or just [name]).
+                         Combine with --dry-run to preview.
   -h, --help             Show this help.
 ```
 
@@ -108,11 +110,39 @@ and a truncated line from a killed process costs that line rather than the file.
 
 Set `HERDR_TAB_NEW_STATE` to redirect the file (used by `check:live`).
 
+## Clearing up
+
+```
+$ herdr-tab-new --teardown --dry-run
+This is a dry run. Teardown would:
+
+  close   m5-beta  (w2:tC)  /Users/andrew/hrock/src/compliance
+  skip    m5-dirty  (wF:t1)  the worktree has uncommitted or untracked changes
+
+Branches are left alone — removing a worktree does not delete its branch.
+```
+
+Teardown works **strictly from the records**, so a tab it did not create cannot be touched
+however it is named. Beyond that:
+
+- **A worktree with uncommitted or untracked changes is never removed** — it is skipped, with
+  the reason, and **its record is kept** (forgetting it would strand the worktree).
+- Dirtiness is judged by `git status --porcelain` here, not inferred from herdr's wording, and
+  `herdr worktree remove` is then called *without* `--force` as a second line of defence.
+- Removing a worktree **does not delete its branch**, and the summary says so.
+- Records whose tab has already gone are forgotten quietly, with no herdr call.
+- One session failing does not abandon the rest, and a record is only forgotten once the thing
+  it describes is actually gone.
+
+Pruning is the one write that is not append-only: the file is rewritten via a temp file and
+renamed. A record appended in that millisecond window would be lost — noted in the code, and
+the reason every other write is an append.
+
 ## Development
 
 ```bash
 bun install
-bun test          # 177 tests, no herdr server required — they run against captured fixtures
+bun test          # 208 tests, no herdr server required — they run against captured fixtures
 bun run typecheck
 bun run build     # compiles dist/herdr-tab-new, a standalone binary
 bun run check:live # OPT-IN: creates a real tab, asserts, closes it again
@@ -135,7 +165,5 @@ share one directory, which is what the ambiguity handling is tested against.
 - **`tab create` returns a pane before its shell is ready.** herdr's `--timeout` covers agent
   readiness *after* launch, not the shell reaching a prompt, so `startAgent` retries that one
   specific rejection until the shell appears.
-- **Nothing acts on the records yet.** `--list` marks entries whose tab has gone; cleaning them
-  up is milestone 5.
 - **The tab name is a starting point, not a contract.** herdr plugins exist that rename tabs
   from the agent's own conversation; nothing should depend on the name this tool sets.

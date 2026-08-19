@@ -15,7 +15,11 @@ import {
   DEFAULT_KIND,
   UnknownAgentKindError,
 } from "./src/agent/kinds.ts";
-import { annotateLiveness } from "./src/state/record.ts";
+import { annotateLiveness, type TabRecord } from "./src/state/record.ts";
+import {
+  planTeardown,
+  type SkippedRecord,
+} from "./src/state/teardown.ts";
 import { assertGitRepo, NotAGitRepoError } from "./src/resolve/git.ts";
 import { isBranchInUse, worktreeIdentity } from "./src/herdr/worktree.ts";
 import { layoutStatusFor, parseLayouts } from "./src/spreader/layout.ts";
@@ -26,6 +30,8 @@ import {
   formatList,
   formatNoMatch,
   formatPlan,
+  formatTeardownPlan,
+  formatTeardownResult,
   formatWorktreeCreated,
   type CreatedSummary,
   type ResolvedPlan,
@@ -33,6 +39,7 @@ import {
 import {
   agentKinds,
   appendRecord,
+  closeTab,
   createTab,
   createWorktree,
   gitBranch,
@@ -45,11 +52,14 @@ import {
   listTabs,
   listWorkspaces,
   readLayoutFiles,
+  isWorktreeDirty,
   openWorktree,
   readRecords,
+  removeWorktree,
   runSpread,
   spreadAvailable,
   startAgent,
+  writeRecords,
 } from "./src/system.ts";
 
 export const EXIT = {
@@ -72,6 +82,8 @@ Options:
   -w, --worktree         Isolate the session in its own git worktree.
   --branch <name>        Branch for --worktree (default: the tab name).
   --list                 List the tabs this tool created in this session.
+  --teardown [name]      Close sessions this tool created (all, or just [name]).
+                         Combine with --dry-run to preview.
   -h, --help             Show this help.
 
 If no live workspace matches the project, the matching herdr-spreader layout is
@@ -84,6 +96,7 @@ type Args = {
   help: boolean;
   dryRun: boolean;
   list: boolean;
+  teardown: boolean;
   kind: string;
   worktree: boolean;
   branch?: string;
@@ -96,6 +109,7 @@ export function parseArgs(argv: string[]): Args {
     help: false,
     dryRun: false,
     list: false,
+    teardown: false,
     kind: DEFAULT_KIND,
     worktree: false,
   };
@@ -105,6 +119,7 @@ export function parseArgs(argv: string[]): Args {
     if (arg === "-h" || arg === "--help") args.help = true;
     else if (arg === "--dry-run") args.dryRun = true;
     else if (arg === "--list") args.list = true;
+    else if (arg === "--teardown") args.teardown = true;
     else if (arg === "-w" || arg === "--worktree") args.worktree = true;
     else if (arg === "--branch") {
       const value = argv[i + 1];
@@ -219,6 +234,76 @@ function resolveOrSpread(args: Args): ResolvedPlan {
       throw retryErr;
     }
   }
+}
+
+/**
+ * The only place records are removed, and the only code here that destroys
+ * anything. It acts strictly from the records, so a tab this tool never created
+ * cannot be touched however it is named.
+ */
+function teardown(args: Args): number {
+  const { socketPath } = resolveSocket(process.env, listSessions());
+  const records = readRecords(socketPath);
+  const liveTabIds = listAllTabs(socketPath).map((t) => t.tab_id);
+
+  // Only live worktrees are worth asking git about.
+  const dirtyWorktrees = records
+    .filter((r) => r.worktree !== null && liveTabIds.includes(r.tabId))
+    .map((r) => r.worktree as string)
+    .filter(isWorktreeDirty);
+
+  const plan = planTeardown({
+    records,
+    liveTabIds,
+    dirtyWorktrees,
+    target: args.name,
+  });
+
+  if (args.dryRun) {
+    console.log(formatTeardownPlan(plan));
+    return EXIT.ok;
+  }
+
+  // One session failing must not abandon the rest, and a record is only
+  // forgotten once the thing it describes is actually gone.
+  const done: TabRecord[] = [];
+  const failed: SkippedRecord[] = [];
+
+  const attempt = (record: TabRecord, act: () => void) => {
+    try {
+      act();
+      done.push(record);
+    } catch (err) {
+      failed.push({ record, reason: (err as Error).message });
+    }
+  };
+
+  for (const r of plan.closeTabs) attempt(r, () => closeTab(socketPath, r.tabId));
+  for (const r of plan.removeWorktrees) {
+    // Not forced: we already checked for uncommitted work, and herdr refusing
+    // is a second line of defence rather than something we have overridden.
+    attempt(r, () => removeWorktree(socketPath, r.workspaceId));
+  }
+
+  const staleOnly = plan.prune.filter(
+    (r) => !plan.closeTabs.includes(r) && !plan.removeWorktrees.includes(r),
+  );
+  const forget = new Set([...staleOnly, ...done]);
+  writeRecords(
+    socketPath,
+    records.filter((r) => !forget.has(r)),
+  );
+
+  console.log(
+    formatTeardownResult({
+      ...plan,
+      closeTabs: done.filter((r) => r.worktree === null),
+      removeWorktrees: done.filter((r) => r.worktree !== null),
+      skipped: [...plan.skipped, ...failed],
+      prune: [...staleOnly, ...done],
+    }),
+  );
+  return EXIT.ok;
 }
 
 function list(): number {
@@ -431,6 +516,7 @@ export function main(argv: string[]): number {
 
   try {
     if (args.list) return list();
+    if (args.teardown) return teardown(args);
 
     // Before anything is created: herdr only rejects a bad kind at agent start,
     // by which point a tab exists.

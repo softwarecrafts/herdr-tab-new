@@ -1,6 +1,7 @@
 import type { LayoutStatus } from "../spreader/layout.ts";
 import type { Workspace } from "../herdr/types.ts";
 import type { AnnotatedRecord } from "../state/record.ts";
+import type { TeardownPlan } from "../state/teardown.ts";
 
 /**
  * Everything milestone 1 resolved. This is the whole answer to "what would you
@@ -262,4 +263,82 @@ export function formatWorktreeCreated(w: WorktreeSummary): string {
     "",
     "Your original checkout is untouched.",
   ].join("\n");
+}
+
+const BRANCH_NOTE =
+  "Branches are left alone — removing a worktree does not delete its branch.";
+
+function teardownLines(plan: TeardownPlan): string[] {
+  const lines: string[] = [];
+
+  for (const r of plan.closeTabs) {
+    lines.push(`  close   ${r.label}  (${r.tabId})  ${r.directory}`);
+  }
+  for (const r of plan.removeWorktrees) {
+    lines.push(`  remove  ${r.label}  (${r.tabId})  worktree ${r.worktree}`);
+  }
+  for (const s of plan.skipped) {
+    lines.push(
+      `  skip    ${s.record.label}  (${s.record.tabId})  ${s.reason}`,
+    );
+  }
+
+  const pruneOnly = plan.prune.filter(
+    (r) =>
+      !plan.closeTabs.includes(r) && !plan.removeWorktrees.includes(r),
+  );
+  for (const r of pruneOnly) {
+    lines.push(`  forget  ${r.label}  (${r.tabId})  tab is already gone`);
+  }
+
+  return lines;
+}
+
+const touchesWorktree = (plan: TeardownPlan) =>
+  plan.removeWorktrees.length > 0 ||
+  plan.skipped.some((s) => s.record.worktree !== null);
+
+/** The `--dry-run` preview: what teardown would do, having done none of it. */
+export function formatTeardownPlan(plan: TeardownPlan): string {
+  if (plan.unmatchedTarget) {
+    return `Nothing recorded under "${plan.unmatchedTarget}" in this session — nothing would be done.`;
+  }
+  if (plan.isEmpty) {
+    return "Nothing to tear down — no sessions recorded in this session.";
+  }
+
+  const lines = ["This is a dry run. Teardown would:", "", ...teardownLines(plan)];
+  if (touchesWorktree(plan)) lines.push("", BRANCH_NOTE);
+
+  return lines.join("\n");
+}
+
+/**
+ * The summary after the fact.
+ *
+ * Skips are stated as prominently as successes: a skip means work is still
+ * sitting there, which is the outcome you most need to notice.
+ */
+export function formatTeardownResult(plan: TeardownPlan): string {
+  if (plan.unmatchedTarget) {
+    return `Nothing recorded under "${plan.unmatchedTarget}" in this session — nothing done.`;
+  }
+  if (plan.isEmpty) {
+    return "Nothing to tear down — nothing needed doing.";
+  }
+
+  const pruneOnly =
+    plan.prune.length - plan.closeTabs.length - plan.removeWorktrees.length;
+
+  const parts = [
+    `${plan.closeTabs.length} tab(s) closed`,
+    `${plan.removeWorktrees.length} worktree(s) removed`,
+    `${plan.skipped.length} left alone`,
+    `${pruneOnly} stale record(s) forgotten`,
+  ];
+
+  const lines = [parts.join(", "), "", ...teardownLines(plan)];
+  if (touchesWorktree(plan)) lines.push("", BRANCH_NOTE);
+
+  return lines.join("\n");
 }

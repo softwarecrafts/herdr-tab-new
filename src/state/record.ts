@@ -80,3 +80,14 @@ export function annotateLiveness(
 ): AnnotatedRecord[] {
   return records.map((r) => ({ ...r, live: liveTabIds.includes(r.tabId) }));
 }
+
+/**
+ * The whole file, for teardown's rewrite.
+ *
+ * The trailing newline matters: the file goes back to being appended to
+ * afterwards, and without it the next append would run onto the last record's
+ * line and corrupt it.
+ */
+export function serializeRecords(records: TabRecord[]): string {
+  return records.map(toRecordLine).join("");
+}
