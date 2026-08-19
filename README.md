@@ -17,6 +17,8 @@ herdr-tab-new [name] [options]
   --dry-run              Show what would be created without creating it.
   --workspace <id|label> Use this workspace instead of inferring one.
   --kind <agent>         Agent to start (default: claude).
+  -w, --worktree         Isolate the session in its own git worktree.
+  --branch <name>        Branch for --worktree (default: the tab name).
   --list                 List the tabs this tool created in this session.
   -h, --help             Show this help.
 ```
@@ -55,6 +57,34 @@ Exit codes: `0` ok · `1` usage · `2` herdr unavailable · `3` no matching work
 Run from inside a herdr pane, herdr already exports `HERDR_SOCKET_PATH`, so the right session
 is targeted with no inference at all.
 
+## Worktree mode
+
+`-w` gives the session its own git worktree and branch, so an agent working in it cannot
+disturb your open checkout — even with uncommitted changes in it.
+
+```
+$ herdr-tab-new -w --branch feat-auth
+Started claude on branch "feat-auth"
+
+  worktree   /Users/andrew/.herdr/worktrees/compliance/feat-auth
+  workspace  feat-auth (wA)
+  tab        wA:t1
+  pane       wA:p1
+
+Your original checkout is untouched.
+```
+
+This uses herdr's own `worktree create`, so the isolated session is a **workspace** rather than
+a tab beside your others. That is a deliberate trade: it puts the worktree where herdr expects
+(`~/.herdr/worktrees/<repo>/<branch>`), registers it in `herdr worktree list`, and means
+teardown is a single `herdr worktree remove --workspace <id>`.
+
+- The branch comes from `--branch`, else the tab name. It branches from current HEAD.
+- An **existing branch is reused** rather than refused.
+- If that worktree is **already open**, it is focused rather than given a second agent.
+- Not a git repo? It refuses **before** creating anything.
+- Removing a worktree does **not** delete its branch.
+
 ## What it remembers
 
 Every tab it creates is recorded, so `--list` can show you what is yours:
@@ -79,10 +109,11 @@ Set `HERDR_TAB_NEW_STATE` to redirect the file (used by `check:live`).
 
 ```bash
 bun install
-bun test          # 141 tests, no herdr server required — they run against captured fixtures
+bun test          # 177 tests, no herdr server required — they run against captured fixtures
 bun run typecheck
 bun run build     # compiles dist/herdr-tab-new, a standalone binary
 bun run check:live # OPT-IN: creates a real tab, asserts, closes it again
+bun run check:live:worktree # OPT-IN: also creates and removes a real worktree
 ```
 
 `bun test` never touches your live herdr. `check:live` deliberately does, and is kept out of

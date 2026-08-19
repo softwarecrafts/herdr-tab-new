@@ -229,3 +229,37 @@ export function formatList(
 
   return lines.join("\n");
 }
+
+export type WorktreeSummary = {
+  branch: string;
+  worktreePath: string;
+  workspaceLabel: string;
+  workspaceId: string;
+  tabId: string;
+  paneId: string;
+  agentKind: string;
+  /** True when the branch already existed and its worktree was opened. */
+  reused: boolean;
+};
+
+/**
+ * Worktree mode's success case.
+ *
+ * The worktree path is the one thing here you cannot guess and will need for
+ * git commands, so it gets its own line. The closing note is not padding: the
+ * whole reason to use a worktree is that your open checkout is left alone, and
+ * seeing that stated is what makes the feature trustworthy.
+ */
+export function formatWorktreeCreated(w: WorktreeSummary): string {
+  return [
+    `Started ${w.agentKind} on branch "${w.branch}"` +
+      (w.reused ? " (existing branch, worktree opened)" : ""),
+    "",
+    `  worktree   ${w.worktreePath}`,
+    `  workspace  ${w.workspaceLabel} (${w.workspaceId})`,
+    `  tab        ${w.tabId}`,
+    `  pane       ${w.paneId}`,
+    "",
+    "Your original checkout is untouched.",
+  ].join("\n");
+}

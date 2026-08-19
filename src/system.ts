@@ -17,6 +17,14 @@ import type { Pane, Session, Tab, Workspace } from "./herdr/types.ts";
 import { LAYOUT_DIR, type LayoutFile } from "./spreader/layout.ts";
 import { FALLBACK_KINDS, parseAgentKinds } from "./agent/kinds.ts";
 import {
+  parseWorktreeCreated,
+  parseWorktreeOpened,
+  worktreeCreateArgs,
+  worktreeOpenArgs,
+  type WorktreeInput,
+  type WorktreeResult,
+} from "./herdr/worktree.ts";
+import {
   parseRecords,
   stateFileFor,
   type TabRecord,
@@ -250,4 +258,25 @@ export function readRecords(socketPath: string): TabRecord[] {
   } catch {
     return [];
   }
+}
+
+export function createWorktree(
+  socketPath: string,
+  input: WorktreeInput,
+): WorktreeResult {
+  return parseWorktreeCreated(runHerdr(worktreeCreateArgs(input), socketPath));
+}
+
+export function openWorktree(
+  socketPath: string,
+  input: WorktreeInput,
+): WorktreeResult {
+  return parseWorktreeOpened(runHerdr(worktreeOpenArgs(input), socketPath));
+}
+
+export function removeWorktree(socketPath: string, workspaceId: string): void {
+  runHerdr(
+    ["worktree", "remove", "--workspace", workspaceId, "--force"],
+    socketPath,
+  );
 }

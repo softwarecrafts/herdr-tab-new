@@ -16,6 +16,9 @@ import { resolveSocket } from "../src/resolve/socket.ts";
 import {
   appendRecord,
   closeTab,
+  createWorktree,
+  gitToplevel,
+  removeWorktree,
   createTab,
   listAllTabs,
   listSessions,
@@ -130,8 +133,47 @@ function main(): number {
     rmSync(stateDir, { recursive: true, force: true });
   }
 
+  if (process.argv.includes("--worktree")) worktreeCheck(socketPath);
+
   console.log("\nLive check passed.");
   return 0;
+}
+
+/**
+ * Only with --worktree: this creates a real git worktree and branch in the
+ * current repo. Removed again via herdr, which takes the worktree and its
+ * workspace together.
+ */
+function worktreeCheck(socketPath: string): void {
+  const projectRoot = gitToplevel(process.cwd());
+  if (!projectRoot) {
+    console.log("\n  skip  --worktree needs a git repo; skipping");
+    return;
+  }
+
+  const branch = `check-live-wt-${process.pid}`;
+  console.log(`\nWorktree check on branch ${branch}`);
+
+  const result = createWorktree(socketPath, { projectRoot, branch });
+
+  try {
+    assert(result.worktreePath.length > 0, "herdr reported a worktree path");
+    assert(!result.alreadyOpen, "a fresh worktree is not already open");
+    assert(
+      !result.worktreePath.startsWith(`${projectRoot}/`),
+      "the worktree sits outside the repo, so it cannot be mistaken for it",
+    );
+    assert(
+      gitToplevel(result.worktreePath) === result.worktreePath,
+      "the worktree is its own git root",
+    );
+  } finally {
+    removeWorktree(socketPath, result.workspace.workspace_id);
+    assert(
+      gitToplevel(result.worktreePath) === null,
+      "the worktree was removed again",
+    );
+  }
 }
 
 process.exit(main());

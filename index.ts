@@ -16,6 +16,8 @@ import {
   UnknownAgentKindError,
 } from "./src/agent/kinds.ts";
 import { annotateLiveness } from "./src/state/record.ts";
+import { assertGitRepo, NotAGitRepoError } from "./src/resolve/git.ts";
+import { isBranchInUse, worktreeIdentity } from "./src/herdr/worktree.ts";
 import { layoutStatusFor, parseLayouts } from "./src/spreader/layout.ts";
 import {
   formatAgentFailed,
@@ -24,6 +26,7 @@ import {
   formatList,
   formatNoMatch,
   formatPlan,
+  formatWorktreeCreated,
   type CreatedSummary,
   type ResolvedPlan,
 } from "./src/cli/output.ts";
@@ -31,6 +34,7 @@ import {
   agentKinds,
   appendRecord,
   createTab,
+  createWorktree,
   gitBranch,
   gitToplevel,
   home,
@@ -41,6 +45,7 @@ import {
   listTabs,
   listWorkspaces,
   readLayoutFiles,
+  openWorktree,
   readRecords,
   runSpread,
   spreadAvailable,
@@ -64,6 +69,8 @@ Options:
   --dry-run              Show what would be created without creating it.
   --workspace <id|label> Use this workspace instead of inferring one.
   --kind <agent>         Agent to start (default: claude).
+  -w, --worktree         Isolate the session in its own git worktree.
+  --branch <name>        Branch for --worktree (default: the tab name).
   --list                 List the tabs this tool created in this session.
   -h, --help             Show this help.
 
@@ -78,6 +85,8 @@ type Args = {
   dryRun: boolean;
   list: boolean;
   kind: string;
+  worktree: boolean;
+  branch?: string;
   workspace?: string;
   name?: string;
 };
@@ -88,6 +97,7 @@ export function parseArgs(argv: string[]): Args {
     dryRun: false,
     list: false,
     kind: DEFAULT_KIND,
+    worktree: false,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -95,6 +105,15 @@ export function parseArgs(argv: string[]): Args {
     if (arg === "-h" || arg === "--help") args.help = true;
     else if (arg === "--dry-run") args.dryRun = true;
     else if (arg === "--list") args.list = true;
+    else if (arg === "-w" || arg === "--worktree") args.worktree = true;
+    else if (arg === "--branch") {
+      const value = argv[i + 1];
+      if (!value || value.startsWith("-")) {
+        throw new Error("--branch needs a branch name");
+      }
+      args.branch = value;
+      i += 1;
+    }
     else if (arg === "--kind") {
       const value = argv[i + 1];
       if (!value || value.startsWith("-")) {
@@ -212,6 +231,59 @@ function list(): number {
   return EXIT.ok;
 }
 
+type StartTarget = {
+  socketPath: string;
+  sessionName: string;
+  workspaceId: string;
+  workspaceLabel: string;
+  tabId: string;
+  paneId: string;
+  label: string;
+  directory: string;
+  agentKind: string;
+  worktree: string | null;
+};
+
+/**
+ * Start the agent and record the tab — in that order, and always both.
+ *
+ * The record is written whatever the agent does: the tab is real either way and
+ * was deliberately left open, so teardown has to know it exists. Keeping this in
+ * one place is deliberate; with tab mode and worktree mode there would otherwise
+ * be four call sites to keep in step, and the ones easiest to forget are the
+ * failure paths — exactly the tabs most likely to need cleaning up.
+ */
+function startAndRecord(t: StartTarget): { started: boolean; reason: string } {
+  let started = true;
+  let reason = "";
+
+  try {
+    startAgent(t.socketPath, {
+      name: t.label,
+      kind: t.agentKind,
+      paneId: t.paneId,
+    });
+  } catch (err) {
+    started = false;
+    reason = (err as Error).message;
+  }
+
+  appendRecord(t.socketPath, {
+    session: t.sessionName,
+    workspaceId: t.workspaceId,
+    workspaceLabel: t.workspaceLabel,
+    tabId: t.tabId,
+    label: t.label,
+    directory: t.directory,
+    agentKind: t.agentKind,
+    agentStarted: started,
+    worktree: t.worktree,
+    created: new Date().toISOString(),
+  });
+
+  return { started, reason };
+}
+
 function create(plan: ResolvedPlan): number {
   const { tab, rootPane } = createTab(plan.socketPath, {
     workspaceId: plan.workspace.workspace_id,
@@ -229,39 +301,117 @@ function create(plan: ResolvedPlan): number {
     agentKind: plan.agentKind,
   };
 
-  // Recorded whatever the agent does: the tab exists either way, and milestone
-  // 5's teardown can only clean up what it knows about.
-  const record = (agentStarted: boolean) =>
-    appendRecord(plan.socketPath, {
-      session: plan.sessionName,
-      workspaceId: plan.workspace.workspace_id,
-      workspaceLabel: plan.workspace.label,
-      tabId: tab.tab_id,
-      label: plan.label,
-      directory: plan.projectRoot,
-      agentKind: plan.agentKind,
-      agentStarted,
-      worktree: null,
-      created: new Date().toISOString(),
-    });
+  const { started, reason } = startAndRecord({
+    socketPath: plan.socketPath,
+    sessionName: plan.sessionName,
+    workspaceId: plan.workspace.workspace_id,
+    workspaceLabel: plan.workspace.label,
+    tabId: tab.tab_id,
+    paneId: rootPane.pane_id,
+    label: plan.label,
+    directory: plan.projectRoot,
+    agentKind: plan.agentKind,
+    worktree: null,
+  });
 
-  try {
-    startAgent(plan.socketPath, {
-      name: plan.label,
-      kind: plan.agentKind,
-      paneId: rootPane.pane_id,
-    });
-  } catch (err) {
+  if (!started) {
     // The tab is real and useful even without the agent, so it stays.
-    record(false);
+    console.error(formatAgentFailed({ ...summary, reason }));
+    return EXIT.herdrUnavailable;
+  }
+
+  console.log(formatCreated(summary));
+  return EXIT.ok;
+}
+
+/**
+ * Worktree mode. herdr creates the worktree, a workspace for it, a tab and a
+ * pane in one call, so workspace resolution is skipped entirely — this works
+ * even when nothing is open for the project.
+ */
+function createInWorktree(args: Args): number {
+  const { socketPath, sessionName } = resolveSocket(process.env, listSessions());
+  const projectRoot = resolveProjectRoot(process.env, process.cwd(), {
+    isDirectory,
+    gitToplevel,
+  });
+
+  // Before any herdr call: otherwise herdr builds a workspace and only then
+  // discovers there is nothing to branch from.
+  assertGitRepo(projectRoot, gitToplevel(projectRoot));
+
+  const { branch, label } = worktreeIdentity({
+    derivedLabel: generateLabel({
+      branch: gitBranch(projectRoot),
+      projectRoot,
+      existingLabels: [],
+      requested: args.name,
+    }),
+    requestedName: args.name,
+    requestedBranch: args.branch,
+  });
+
+  let result;
+  let reused = false;
+  try {
+    result = createWorktree(socketPath, { projectRoot, branch });
+  } catch (err) {
+    if (!isBranchInUse(err)) throw err;
+    // An existing branch is meant to be reused, not refused.
+    result = openWorktree(socketPath, { projectRoot, branch });
+    reused = true;
+  }
+
+  // Already open means there is a live session in that pane. Starting a second
+  // agent there is refused by herdr anyway; focusing it is what was wanted.
+  if (result.alreadyOpen) {
+    console.log(
+      `Worktree for "${branch}" is already open — focused workspace ${result.workspace.label} (${result.workspace.workspace_id}).\n  ${result.worktreePath}`,
+    );
+    return EXIT.ok;
+  }
+
+  const { started, reason } = startAndRecord({
+    socketPath,
+    sessionName,
+    workspaceId: result.workspace.workspace_id,
+    workspaceLabel: result.workspace.label,
+    tabId: result.tab.tab_id,
+    paneId: result.rootPane.pane_id,
+    label,
+    directory: result.worktreePath,
+    agentKind: args.kind,
+    worktree: result.worktreePath,
+  });
+
+  if (!started) {
     console.error(
-      formatAgentFailed({ ...summary, reason: (err as Error).message }),
+      formatAgentFailed({
+        label,
+        tabId: result.tab.tab_id,
+        paneId: result.rootPane.pane_id,
+        workspaceLabel: result.workspace.label,
+        workspaceId: result.workspace.workspace_id,
+        projectRoot: result.worktreePath,
+        agentKind: args.kind,
+        reason,
+      }),
     );
     return EXIT.herdrUnavailable;
   }
 
-  record(true);
-  console.log(formatCreated(summary));
+  console.log(
+    formatWorktreeCreated({
+      branch,
+      worktreePath: result.worktreePath,
+      workspaceLabel: result.workspace.label,
+      workspaceId: result.workspace.workspace_id,
+      tabId: result.tab.tab_id,
+      paneId: result.rootPane.pane_id,
+      agentKind: args.kind,
+      reused,
+    }),
+  );
   return EXIT.ok;
 }
 
@@ -286,6 +436,8 @@ export function main(argv: string[]): number {
     // by which point a tab exists.
     assertKnownKind(args.kind, agentKinds());
 
+    if (args.worktree) return createInWorktree(args);
+
     const plan = resolveOrSpread(args);
 
     if (args.dryRun) {
@@ -309,6 +461,10 @@ export function main(argv: string[]): number {
     if (err instanceof AmbiguousWorkspaceError) {
       console.error(formatAmbiguous(err.projectRoot, err.candidates));
       return EXIT.ambiguous;
+    }
+    if (err instanceof NotAGitRepoError) {
+      console.error((err as Error).message);
+      return EXIT.usage;
     }
     if (err instanceof UnknownAgentKindError) {
       console.error((err as Error).message);
