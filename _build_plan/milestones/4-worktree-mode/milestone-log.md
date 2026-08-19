@@ -38,9 +38,8 @@ Running it disproved that. herdr 0.8.0 creates worktrees at
 Consequences:
 
 - **herdr and Zed do *not* share a worktree root.** Zed defaults to `../worktrees`; herdr uses
-  `~/.herdr/worktrees`. Whether Zed's switcher lists a herdr-made worktree is therefore *more*
-  open than planning assumed, and still needs Andrew's check. The contingency is unchanged:
-  `herdr worktree create --path <PATH>` can write to Zed's layout instead.
+  `~/.herdr/worktrees`. This raised the question of whether Zed would see herdr's worktrees at
+  all — since settled by testing, see "Zed interoperability" below. It does.
 - **The isolation property still holds, and more strongly.** `~/.herdr/worktrees/…` is nowhere
   near any project, so `matchWorkspaces` can never confuse a worktree workspace with a real one.
   Verified: after creating a worktree, `--dry-run` from the main checkout still resolved
