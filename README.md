@@ -84,6 +84,9 @@ teardown is a single `herdr worktree remove --workspace <id>`.
 - If that worktree is **already open**, it is focused rather than given a second agent.
 - Not a git repo? It refuses **before** creating anything.
 - Removing a worktree does **not** delete its branch.
+- **Zed sees these worktrees.** They appear in Zed's git-panel worktree picker even though they
+  live outside Zed's own `git.worktree_directory` — Zed enumerates `git worktree list` rather
+  than scanning a directory. Verified against Zed directly.
 
 ## What it remembers
 

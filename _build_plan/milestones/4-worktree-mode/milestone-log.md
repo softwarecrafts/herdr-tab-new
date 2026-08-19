@@ -121,7 +121,19 @@ Consequences:
 - `bun run check:live:worktree` — 16 assertions pass, creating and removing a real worktree.
 - All test branches, worktrees, tabs and the test state file removed afterwards.
 
-### Not verified
+### Zed interoperability — verified
 
-**Whether Zed lists a herdr-created worktree in its git-panel switcher.** This needs Andrew, and
-matters more than planning thought now that the two are known to use different roots.
+**Zed lists herdr-created worktrees.** Andrew confirmed a worktree made at
+`~/.herdr/worktrees/compliance/zed-check` appears in Zed's git-panel worktree picker, even
+though Zed's own `git.worktree_directory` points at `~/hrock/src/worktrees/` and that directory
+contained nothing by that name.
+
+So **Zed enumerates `git worktree list` rather than scanning its configured directory** — its
+docs describe switching to "an existing worktree" without saying which of the two it means, and
+this settles it empirically. herdr's worktrees are ordinary registered git worktrees, so they
+show up regardless of where they live.
+
+Consequence: **no change needed.** The `--path` contingency is dropped, and worktrees stay at
+`~/.herdr/worktrees/<repo>/<branch>` — which keeps the stronger isolation property, since that
+location is nowhere near any project directory and so can never be confused with one by
+workspace matching.
