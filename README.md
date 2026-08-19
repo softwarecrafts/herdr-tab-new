@@ -217,6 +217,25 @@ Pruning is the one write that is not append-only: the file is rewritten via a te
 renamed. A record appended in that millisecond window would be lost — noted in the code, and
 the reason every other write is an append.
 
+## Install
+
+The entry point is a wrapper in dotfiles; the binary is not.
+
+```bash
+bun run build                                    # builds dist/herdr-tab-new
+ln -sfn ~/dotfiles/bin/herdr-tab-new ~/.bin/herdr-tab-new
+```
+
+`~/dotfiles/bin/herdr-tab-new` is a ~1KB shell wrapper that execs the compiled binary from this
+checkout, falling back to `bun index.ts` when it has not been built. The binary itself is ~55MB
+and stays out of the dotfiles repo — committing it would more than double that repo and add
+another 55MB blob on every rebuild.
+
+Set `HERDR_TAB_NEW_REPO` if the checkout lives somewhere other than `~/src/herdr-tab-new`.
+
+To run it automatically when Zed opens a Terminal Thread in the agent panel, set
+`agent.terminal_init_command` to `herdr-tab-new` in Zed's settings.
+
 ## Development
 
 ```bash
