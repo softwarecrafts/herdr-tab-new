@@ -33,8 +33,16 @@ export type Session = {
 
 export type AgentInfo = {
   agent: string;
+  name?: string;
   pane_id: string;
-  tab_id?: string;
-  workspace_id?: string;
+  tab_id: string;
+  workspace_id: string;
   agent_status: string;
+  cwd: string;
+  foreground_cwd?: string;
+  focused?: boolean;
+  terminal_title?: string;
+  terminal_title_stripped?: string;
+  /** The agent's own conversation id, e.g. Claude's session uuid. */
+  agent_session?: { agent: string; kind: string; source: string; value: string };
 };

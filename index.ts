@@ -13,6 +13,12 @@ import { generateLabel } from "./src/resolve/label.ts";
 import { toAgentName } from "./src/agent/name.ts";
 import { shouldAttach } from "./src/cli/attach.ts";
 import {
+  groupByProject,
+  matchExistingSessions,
+  type ExistingSession,
+} from "./src/resolve/existing.ts";
+import { ago, formatPickerRows, parseChoice } from "./src/cli/picker.ts";
+import {
   assertKnownKind,
   DEFAULT_KIND,
   UnknownAgentKindError,
@@ -49,7 +55,9 @@ import {
   gitToplevel,
   home,
   isDirectory,
+  isInteractive,
   listAgentNames,
+  listAgents,
   listAllTabs,
   listPanes,
   listSessions,
@@ -58,6 +66,7 @@ import {
   readLayoutFiles,
   isWorktreeDirty,
   openWorktree,
+  promptChoice,
   readRecords,
   removeWorktree,
   runSpread,
@@ -72,6 +81,7 @@ export const EXIT = {
   herdrUnavailable: 2,
   noWorkspace: 3,
   ambiguous: 4,
+  needsChoice: 5,
 } as const;
 
 const USAGE = `herdr-tab-new — open a new agent session in the herdr workspace for this project
@@ -86,6 +96,8 @@ Options:
   -w, --worktree         Isolate the session in its own git worktree.
   --branch <name>        Branch for --worktree (default: the tab name).
   --list                 List the tabs this tool created in this session.
+  --new                  Always create, without offering existing sessions.
+  --attach               Pick from every live agent session, across all projects.
   --teardown [name]      Close sessions this tool created (all, or just [name]).
                          Combine with --dry-run to preview.
   -h, --help             Show this help.
@@ -94,13 +106,16 @@ If no live workspace matches the project, the matching herdr-spreader layout is
 applied with \`spread\` and resolution is retried.
 
 Exit codes:
-  0 ok   1 usage   2 herdr unavailable   3 no matching workspace   4 ambiguous`;
+  0 ok   1 usage   2 herdr unavailable   3 no matching workspace   4 ambiguous
+  5 a choice is needed but this is not a terminal`;
 
 type Args = {
   help: boolean;
   dryRun: boolean;
   list: boolean;
   teardown: boolean;
+  fresh: boolean;
+  attach: boolean;
   kind: string;
   worktree: boolean;
   branch?: string;
@@ -114,6 +129,8 @@ export function parseArgs(argv: string[]): Args {
     dryRun: false,
     list: false,
     teardown: false,
+    fresh: false,
+    attach: false,
     kind: DEFAULT_KIND,
     worktree: false,
   };
@@ -124,6 +141,8 @@ export function parseArgs(argv: string[]): Args {
     else if (arg === "--dry-run") args.dryRun = true;
     else if (arg === "--list") args.list = true;
     else if (arg === "--teardown") args.teardown = true;
+    else if (arg === "--new") args.fresh = true;
+    else if (arg === "--attach") args.attach = true;
     else if (arg === "-w" || arg === "--worktree") args.worktree = true;
     else if (arg === "--branch") {
       const value = argv[i + 1];
@@ -307,6 +326,90 @@ function teardown(args: Args): number {
       prune: [...staleOnly, ...done],
     }),
   );
+  return EXIT.ok;
+}
+
+function sessionSources(socketPath: string) {
+  return {
+    agents: listAgents(socketPath),
+    tabs: listAllTabs(socketPath),
+    records: readRecords(socketPath),
+  };
+}
+
+/**
+ * Offer what already exists before making more.
+ *
+ * Closing the terminal you were attached from leaves the tab and its agent
+ * running in the herdr server. Without this, the next run in the same project
+ * silently creates a second session and the first becomes invisible.
+ *
+ * Returns an exit code when it handled the run, or null to carry on and create.
+ */
+function offerExisting(sessions: ExistingSession[], socketPath: string): number | null {
+  console.log(
+    `${sessions.length} session${sessions.length === 1 ? "" : "s"} already open here:\n`,
+  );
+  for (const row of formatPickerRows(sessions, Date.now())) console.log(row);
+
+  if (!isInteractive()) {
+    console.error(
+      "\nNot a terminal, so nothing was chosen." +
+        "\nRun with --new to create another, or --attach to pick one.",
+    );
+    return EXIT.needsChoice;
+  }
+
+  const choice = parseChoice(promptChoice("\nChoose: "), sessions.length);
+
+  if (choice.kind === "existing") {
+    const chosen = sessions[choice.index]!;
+    attachToPane(socketPath, chosen.paneId, chosen.label ?? "");
+  }
+  if (choice.kind === "new") return null;
+  if (choice.kind === "invalid") {
+    console.error("Not one of the options — nothing done.");
+    return EXIT.usage;
+  }
+  return EXIT.ok;
+}
+
+/** `--attach`: everything live, wherever it is. */
+function attachAnywhere(): number {
+  const { socketPath } = resolveSocket(process.env, listSessions());
+  const groups = groupByProject(sessionSources(socketPath));
+  const flat = groups.flatMap((g) => g.sessions);
+
+  if (flat.length === 0) {
+    console.log("No agent sessions are running.");
+    return EXIT.ok;
+  }
+
+  console.log(`${flat.length} live session(s):\n`);
+  let n = 0;
+  for (const group of groups) {
+    console.log(`  ${group.projectRoot}`);
+    for (const s of group.sessions) {
+      n += 1;
+      const age = s.created ? `  ·  ${ago(s.created, Date.now())}` : "";
+      console.log(`    ${n}) ${s.status}  ·  ${s.label ?? s.paneId}${age}`);
+    }
+  }
+
+  if (!isInteractive()) {
+    console.error("\nNot a terminal, so nothing was chosen.");
+    return EXIT.needsChoice;
+  }
+
+  const choice = parseChoice(promptChoice("\nChoose: "), flat.length);
+  if (choice.kind === "existing") {
+    const chosen = flat[choice.index]!;
+    attachToPane(socketPath, chosen.paneId, chosen.label ?? "");
+  }
+  if (choice.kind === "invalid") {
+    console.error("Not one of the options — nothing done.");
+    return EXIT.usage;
+  }
   return EXIT.ok;
 }
 
@@ -540,12 +643,32 @@ export function main(argv: string[]): number {
   try {
     if (args.list) return list();
     if (args.teardown) return teardown(args);
+    if (args.attach) return attachAnywhere();
 
     // Before anything is created: herdr only rejects a bad kind at agent start,
     // by which point a tab exists.
     assertKnownKind(args.kind, agentKinds());
 
     if (args.worktree) return createInWorktree(args);
+
+    // Resume rather than duplicate, unless told otherwise. Skipped for --dry-run,
+    // which reports and changes nothing.
+    if (!args.fresh && !args.dryRun) {
+      const { socketPath } = resolveSocket(process.env, listSessions());
+      const projectRoot = resolveProjectRoot(process.env, process.cwd(), {
+        isDirectory,
+        gitToplevel,
+      });
+      const existing = matchExistingSessions({
+        ...sessionSources(socketPath),
+        projectRoot,
+      });
+
+      if (existing.length > 0) {
+        const handled = offerExisting(existing, socketPath);
+        if (handled !== null) return handled;
+      }
+    }
 
     const plan = resolveOrSpread(args);
 

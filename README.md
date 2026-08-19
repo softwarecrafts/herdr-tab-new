@@ -20,6 +20,8 @@ herdr-tab-new [name] [options]
   -w, --worktree         Isolate the session in its own git worktree.
   --branch <name>        Branch for --worktree (default: the tab name).
   --list                 List the tabs this tool created in this session.
+  --new                  Always create, without offering existing sessions.
+  --attach               Pick from every live agent session, across all projects.
   --teardown [name]      Close sessions this tool created (all, or just [name]).
                          Combine with --dry-run to preview.
   -h, --help             Show this help.
@@ -90,6 +92,41 @@ teardown is a single `herdr worktree remove --workspace <id>`.
 - **Zed sees these worktrees.** They appear in Zed's git-panel worktree picker even though they
   live outside Zed's own `git.worktree_directory` — Zed enumerates `git worktree list` rather
   than scanning a directory. Verified against Zed directly.
+
+## Resuming instead of duplicating
+
+Closing the terminal you attached from leaves the tab and its agent running in the herdr
+server — so running the command again in the same project would otherwise make a *second*
+session, and the first would quietly become invisible.
+
+Instead, if anything is already running for this project, you are shown it and choose:
+
+```
+$ herdr-tab-new
+1 session already open here:
+
+  1) idle  ·  resume-probe  ·  2h ago
+  n) start a new session here
+
+Choose:
+```
+
+- **"Already open here" means any live agent whose directory is this project root** — including
+  sessions started by hand in herdr, or whose record teardown pruned. herdr's live view is
+  authoritative, and attaching is non-destructive.
+- **`--new`** skips the picker entirely.
+- **`--attach`** lists every live session grouped by project, which is the view that makes
+  accumulation across all your work visible at once.
+- **`--dry-run` never prompts.**
+
+Two things herdr does not expose, and their consequences:
+
+- **Whether a client is attached to a pane.** So the picker shows `agent_status` instead —
+  `working` means an agent is mid-task right now.
+- **When an agent started.** Ages come from this tool's own records, so a session it did not
+  create shows no age rather than a guessed one.
+
+Exit code `5` means a choice was needed but stdin was not a terminal — nothing was created.
 
 ## Where you end up
 
@@ -184,7 +221,7 @@ the reason every other write is an append.
 
 ```bash
 bun install
-bun test          # 246 tests, no herdr server required — they run against captured fixtures
+bun test          # 278 tests, no herdr server required — they run against captured fixtures
 bun run typecheck
 bun run build     # compiles dist/herdr-tab-new, a standalone binary
 bun run check:live # OPT-IN: creates a real tab, asserts, closes it again

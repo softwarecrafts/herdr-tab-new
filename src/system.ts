@@ -16,7 +16,13 @@ import {
   parseHerdrResponse,
   selectHerdrPayload,
 } from "./herdr/client.ts";
-import type { Pane, Session, Tab, Workspace } from "./herdr/types.ts";
+import type {
+  AgentInfo,
+  Pane,
+  Session,
+  Tab,
+  Workspace,
+} from "./herdr/types.ts";
 import { LAYOUT_DIR, type LayoutFile } from "./spreader/layout.ts";
 import { attachArgs, titleEscape } from "./cli/attach.ts";
 import { FALLBACK_KINDS, parseAgentKinds } from "./agent/kinds.ts";
@@ -377,3 +383,17 @@ export function attachToPane(
 
   process.exit(proc.exitCode ?? 0);
 }
+
+/** Full live agent records, for deciding whether a session already exists. */
+export const listAgents = (socketPath: string): AgentInfo[] =>
+  (runHerdr(["agent", "list"], socketPath) as { agents: AgentInfo[] }).agents;
+
+/**
+ * Ask a question and read one line back. The only interactive part of the tool,
+ * and only ever reached with a terminal on stdin.
+ */
+export function promptChoice(message: string): string {
+  return prompt(message) ?? "";
+}
+
+export const isInteractive = (): boolean => Boolean(process.stdin.isTTY);
