@@ -31,10 +31,13 @@ describe("tabCreateArgs", () => {
     expect(args[args.indexOf("--label") + 1]).toBe("compliance");
   });
 
-  test("always focuses the new tab", () => {
-    // This is for you to start work in, so land in it. herdr defaults focus to
-    // false, which is the wrong default here.
-    expect(args).toContain("--focus");
+  test("never focuses the new tab", () => {
+    // Reversed. Milestone 1 focused it on the reasoning "this is for you to
+    // work in, so land in it" — but you are in Zed when you run this, so
+    // focusing reorganises herdr behind your back. You are brought to the
+    // session by attaching instead.
+    expect(args).toContain("--no-focus");
+    expect(args).not.toContain("--focus");
   });
 
   test("keeps a label with a slash intact as one argument", () => {

@@ -11,6 +11,7 @@ import {
 } from "./src/resolve/workspace.ts";
 import { generateLabel } from "./src/resolve/label.ts";
 import { toAgentName } from "./src/agent/name.ts";
+import { shouldAttach } from "./src/cli/attach.ts";
 import {
   assertKnownKind,
   DEFAULT_KIND,
@@ -40,6 +41,7 @@ import {
 import {
   agentKinds,
   appendRecord,
+  attachToPane,
   closeTab,
   createTab,
   createWorktree,
@@ -410,6 +412,12 @@ function create(plan: ResolvedPlan): number {
   }
 
   console.log(formatCreated(summary));
+
+  if (shouldAttach({ env: process.env, mode: "create", agentStarted: true })) {
+    // Does not return: this terminal becomes the session.
+    attachToPane(plan.socketPath, rootPane.pane_id);
+  }
+
   return EXIT.ok;
 }
 
@@ -501,6 +509,17 @@ function createInWorktree(args: Args): number {
       reused,
     }),
   );
+
+  if (
+    shouldAttach({
+      env: process.env,
+      mode: "create-worktree",
+      agentStarted: true,
+    })
+  ) {
+    attachToPane(socketPath, result.rootPane.pane_id);
+  }
+
   return EXIT.ok;
 }
 

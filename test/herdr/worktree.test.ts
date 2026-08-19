@@ -26,8 +26,11 @@ describe("worktreeCreateArgs", () => {
     expect(args[args.indexOf("--branch") + 1]).toBe("m4-probe");
   });
 
-  test("focuses the new workspace", () => {
-    expect(args).toContain("--focus");
+  test("never focuses the new workspace", () => {
+    // Same rule as tabs. Flagged as an experiment: landing in an isolated
+    // workspace may still turn out to be wanted, and this is one argument.
+    expect(args).toContain("--no-focus");
+    expect(args).not.toContain("--focus");
   });
 
   test("does not pass a base, so herdr branches from current HEAD", () => {
@@ -50,8 +53,9 @@ describe("worktreeOpenArgs", () => {
     expect(args[args.indexOf("--branch") + 1]).toBe("existing");
   });
 
-  test("focuses it, like create does", () => {
-    expect(args).toContain("--focus");
+  test("leaves focus alone, like create does", () => {
+    expect(args).toContain("--no-focus");
+    expect(args).not.toContain("--focus");
   });
 });
 

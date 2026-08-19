@@ -18,6 +18,7 @@ import {
 } from "./herdr/client.ts";
 import type { Pane, Session, Tab, Workspace } from "./herdr/types.ts";
 import { LAYOUT_DIR, type LayoutFile } from "./spreader/layout.ts";
+import { attachArgs } from "./cli/attach.ts";
 import { FALLBACK_KINDS, parseAgentKinds } from "./agent/kinds.ts";
 import {
   parseWorktreeCreated,
@@ -343,4 +344,27 @@ export function listAgentNames(socketPath: string): string[] {
     agents: { name?: string }[];
   };
   return agents.map((a) => a.name).filter((n): n is string => Boolean(n));
+}
+
+/**
+ * Hand this terminal over to a herdr pane and never come back.
+ *
+ * stdio is inherited rather than piped, so the attached agent genuinely owns
+ * the terminal, and we exit with whatever status it exits with. This does not
+ * return: by design the process you started *becomes* the session.
+ */
+export function attachToPane(socketPath: string, paneId: string): never {
+  const { cmd, env } = buildHerdrInvocation(
+    attachArgs(paneId),
+    socketPath,
+    process.env,
+  );
+
+  const proc = Bun.spawnSync({
+    cmd,
+    env: env as Record<string, string>,
+    stdio: ["inherit", "inherit", "inherit"],
+  });
+
+  process.exit(proc.exitCode ?? 0);
 }

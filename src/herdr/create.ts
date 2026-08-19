@@ -34,9 +34,10 @@ export function tabCreateArgs({
     cwd,
     "--label",
     label,
-    // herdr defaults focus to false. This tab is where you are about to work,
-    // so land in it.
-    "--focus",
+    // Deliberately not focused. You are in Zed when you run this, so moving
+    // herdr's active tab reorganises it behind your back; you are brought to
+    // the session by attaching to it instead.
+    "--no-focus",
   ];
 }
 

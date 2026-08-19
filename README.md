@@ -52,6 +52,7 @@ Exit codes: `0` ok · `1` usage · `2` herdr unavailable · `3` no matching work
 | Which herdr session? | `HERDR_SOCKET_PATH` → `HERDR_SESSION` → the default session |
 | Which workspace? | Any workspace with a pane **at or beneath** the project root. A pane *above* it never counts — otherwise a workspace opened at `~` would match every project on the machine. |
 | Which of several? | The focused one. If none is focused it refuses and lists them, rather than guessing. |
+| Does it steal focus? | No. Nothing it creates takes focus inside herdr — you are brought to the session by attaching instead. |
 | What name? | The branch, unless that is `main`/`master`, in which case the project directory name. `-2`, `-3`… appended if taken. |
 | No workspace at all? | Whichever layout in `~/.herdr-spreader/` declares this project root, applied via `spread <name>`. If there is no layout, it stops and says so. |
 | Which agent? | `claude`, or `--kind <agent>`. The valid list is read from `herdr agent start --help`, and an unknown kind is rejected **before** anything is created. |
@@ -89,6 +90,22 @@ teardown is a single `herdr worktree remove --workspace <id>`.
 - **Zed sees these worktrees.** They appear in Zed's git-panel worktree picker even though they
   live outside Zed's own `git.worktree_directory` — Zed enumerates `git worktree list` rather
   than scanning a directory. Verified against Zed directly.
+
+## Where you end up
+
+Run it from a terminal **outside** herdr — a Zed terminal — and that terminal **becomes the new
+agent session**, via `herdr agent attach`. You do not switch apps and you do not go hunting for
+the tab.
+
+Run it from **inside a herdr pane** and it just reports what it created: you are already in
+herdr, so taking your terminal over would be rude. Detected with `HERDR_ENV`, which herdr sets
+in every pane it spawns.
+
+Nothing is attached for `--dry-run`, `--list`, `--teardown`, or when the agent failed to start —
+there would be nothing to attach to.
+
+The `zed` CLI can only open paths, so replacing this process is the only way to get the session
+into Zed. That is why the terminal is consumed rather than a new one being opened.
 
 ## What it remembers
 
@@ -142,7 +159,7 @@ the reason every other write is an append.
 
 ```bash
 bun install
-bun test          # 232 tests, no herdr server required — they run against captured fixtures
+bun test          # 242 tests, no herdr server required — they run against captured fixtures
 bun run typecheck
 bun run build     # compiles dist/herdr-tab-new, a standalone binary
 bun run check:live # OPT-IN: creates a real tab, asserts, closes it again

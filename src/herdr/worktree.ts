@@ -31,7 +31,9 @@ export function worktreeCreateArgs({
     // No --base: herdr branches from current HEAD, matching `git worktree add -b`.
     // No --label: herdr names the workspace, so these look like worktrees made
     // through herdr directly.
-    "--focus",
+    // Not focused, same rule as tabs — flagged as an experiment, since landing
+    // in an isolated workspace may still turn out to be wanted.
+    "--no-focus",
   ];
 }
 
@@ -46,7 +48,7 @@ export function worktreeOpenArgs({
     projectRoot,
     "--branch",
     branch,
-    "--focus",
+    "--no-focus",
   ];
 }
 
