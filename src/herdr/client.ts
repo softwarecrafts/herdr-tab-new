@@ -61,9 +61,22 @@ export function buildHerdrInvocation(
   const { HERDR_SESSION: _dropped, ...rest } = env;
 
   return {
-    cmd: ["herdr", ...args],
+    cmd: [herdrBin(env), ...args],
     env: { ...rest, HERDR_SOCKET_PATH: socketPath },
   };
+}
+
+/**
+ * Which herdr to run.
+ *
+ * herdr sets HERDR_BIN_PATH in every pane and every plugin command, pointing at
+ * the binary actually serving the socket. That is not always the one on PATH:
+ * during `herdr update --handoff` the running server is the old binary while
+ * PATH has already moved on. Preferring it also spares plugins a PATH that the
+ * herdr server may not have inherited.
+ */
+export function herdrBin(env: Record<string, string | undefined>): string {
+  return env.HERDR_BIN_PATH || "herdr";
 }
 
 /**
