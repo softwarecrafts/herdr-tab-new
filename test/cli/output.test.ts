@@ -46,6 +46,12 @@ describe("formatPlan", () => {
     expect(out).toContain("from ZED_WORKTREE_ROOT");
   });
 
+  test("credits herdr when the root came from the plugin context", () => {
+    const out = formatPlan(plan({ rootSource: "plugin" }));
+
+    expect(out).toContain("from the herdr workspace");
+  });
+
   test("flags the fallback case, where the root is only a guess", () => {
     const out = formatPlan(plan({ rootSource: "cwd" }));
 

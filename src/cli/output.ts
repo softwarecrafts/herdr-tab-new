@@ -20,13 +20,14 @@ export type ResolvedPlan = {
   projectRoot: string;
   /** Current branch, or null on a detached HEAD / outside a repo. */
   branch: string | null;
-  /** How the project root was determined: "zed", "git" or "cwd". */
-  rootSource: "zed" | "git" | "cwd";
+  /** How the project root was determined. */
+  rootSource: "plugin" | "zed" | "git" | "cwd";
   /** The agent that milestone 2 will start. Always "claude" for now. */
   agentKind: string;
 };
 
 const ROOT_SOURCE_LABEL: Record<ResolvedPlan["rootSource"], string> = {
+  plugin: "from the herdr workspace",
   zed: "from ZED_WORKTREE_ROOT",
   git: "from git",
   cwd: "from the working directory",
