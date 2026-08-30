@@ -62,3 +62,33 @@ export function formatPickerRows(
 
   return rows;
 }
+
+export type Outcome =
+  | { kind: "focus"; session: ExistingSession }
+  | { kind: "create" }
+  | { kind: "cancel" }
+  | { kind: "invalid" };
+
+/**
+ * A keystroke and the rows on screen, resolved to what should happen.
+ *
+ * parseChoice already turns input into an index; this is the step that turns an
+ * index into a *session*, and it exists as its own function because two callers
+ * now need it — the CLI prompt and the plugin's popup pane. Duplicating the
+ * indexing in both is how "2" comes to mean different sessions in the two
+ * places, which is the failure this module's header warns about.
+ */
+export function resolveChoice(
+  input: string,
+  sessions: ExistingSession[],
+): Outcome {
+  const choice = parseChoice(input, sessions.length);
+
+  if (choice.kind === "existing") {
+    return { kind: "focus", session: sessions[choice.index]! };
+  }
+  if (choice.kind === "new") return { kind: "create" };
+  if (choice.kind === "cancel") return { kind: "cancel" };
+
+  return { kind: "invalid" };
+}

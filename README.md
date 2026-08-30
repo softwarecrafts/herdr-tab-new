@@ -236,6 +236,52 @@ Set `HERDR_TAB_NEW_REPO` if the checkout lives somewhere other than `~/src/herdr
 To run it automatically when Zed opens a Terminal Thread in the agent panel, set
 `agent.terminal_init_command` to `herdr-tab-new` in Zed's settings.
 
+## As a herdr plugin
+
+The same checkout is also a herdr plugin, which puts the picker on a keybinding
+inside herdr rather than only in a terminal.
+
+```bash
+bun run build                       # the manifest prefers dist/, falls back to bun
+herdr plugin link .                 # local development
+herdr plugin install softwarecrafts/herdr-tab-new   # once published
+```
+
+It exposes exactly one action, `softwarecrafts.tab-new.pick`. There is no
+separate "new session" action because the picker already offers that as a row —
+and with nothing open for the project it skips the popup and just creates one.
+Worktree mode, `--teardown` and `--list` stay on the CLI, which has flags and a
+scrollback to print into.
+
+Bind it in `~/.config/herdr/config.toml`, then `herdr server reload-config`:
+
+```toml
+[[keys.command]]
+key = "prefix+n"
+type = "plugin_action"
+command = "softwarecrafts.tab-new.pick"
+description = "Resume or start an agent session"
+```
+
+The plugin and the CLI **share one record file**, because herdr injects
+`HERDR_SOCKET_PATH` and records live beside the session socket either way. A
+session started from the popup is torn down by `herdr-tab-new --teardown` from a
+terminal, and vice versa.
+
+`herdr plugin install` runs `bun install` and `bun run build`, so bun has to be
+on the machine — herdr reports a build failure but installs no toolchains.
+`herdr plugin link` deliberately does *not* build, which is why the shim falls
+back to `bun index.ts`.
+
+### What the plugin cannot do
+
+Attach. From a terminal the tool replaces itself with `herdr agent attach
+--takeover`, so the terminal you typed in becomes the session. herdr sets
+`HERDR_ENV` in everything it spawns, and inside herdr the equivalent move is to
+focus the tab — which is what the plugin does instead. This is also why the Zed
+`agent.terminal_init_command` route still needs the CLI: it is a terminal
+outside herdr, which is precisely the case a plugin cannot serve.
+
 ## Development
 
 ```bash
@@ -258,6 +304,21 @@ share one directory, which is what the ambiguity handling is tested against.
 
 ## Notes
 
+- **A plugin popup's stdout is not its terminal.** In a `placement = "popup"`
+  pane, stdin and stderr are the pty but stdout is piped into `herdr plugin
+  log`. `console.log` therefore prints where nobody can see it, and Bun's
+  `prompt()` — which writes its message to stdout — asks a question that never
+  appears while apparently hanging. Everything the user must read goes to
+  stderr; `prompt()` is used for nothing but the line read. Action commands are
+  stricter still: they have no tty on any stream.
+- **`plugin pane open --cwd` changes directory before resolving argv.** A
+  manifest command of `["./bin/herdr-tab-new", …]` fails with `Unable to spawn
+  <cwd>/./bin/herdr-tab-new`, and manifest argv gets no shell expansion. The
+  form that works is `["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/…\" …"]`.
+- **`--placement` on the CLI cannot say `popup`.** It accepts only
+  `overlay|split|tab|zoomed` on 0.8.2, so the popup placement has to be declared
+  in the manifest and the flag omitted, or the pane is silently downgraded to a
+  tiled one — losing the terminal input the picker depends on.
 - **Build with `bun run build`, not `bun index.ts`.** The compiled binary has no runtime
   dependencies, so it behaves identically in a shell where mise, bun or node are absent.
 - **`tab create` returns a pane before its shell is ready.** herdr's `--timeout` covers agent

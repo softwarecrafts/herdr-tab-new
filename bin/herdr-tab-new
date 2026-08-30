@@ -1,0 +1,40 @@
+#! /usr/bin/env sh
+#
+# herdr-tab-new — the entry point herdr's plugin manifest names.
+#
+# A manifest command is a fixed argv array run without a shell, so it cannot
+# expand a variable or find a binary that may not have been built yet. This
+# shim is the indirection that makes both work: herdr always execs the same
+# path, and what actually runs is decided here.
+#
+# `herdr plugin link` deliberately does not run [[build]] commands — local
+# authors build their own tree — so falling back to `bun index.ts` is what makes
+# a freshly linked checkout work before `bun run build` has ever been run.
+
+set -e
+
+# HERDR_PLUGIN_ROOT is injected into every plugin command. Outside herdr, walk
+# up from this script instead, so the shim is also runnable by hand. Deriving it
+# from $0 rather than $PWD matters: herdr runs plugin panes with --cwd set to
+# the project, not to the plugin directory.
+if [ -n "$HERDR_PLUGIN_ROOT" ]; then
+    ROOT="$HERDR_PLUGIN_ROOT"
+else
+    ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+fi
+
+BIN="$ROOT/dist/herdr-tab-new"
+
+# exec, not run-and-return: the CLI hands its terminal over when it attaches to
+# an agent, so signals and the TTY have to pass straight through. In a popup
+# pane the same applies — stdin is the pty the picker reads from.
+if [ -x "$BIN" ]; then
+    exec "$BIN" "$@"
+fi
+
+if [ -f "$ROOT/index.ts" ] && command -v bun >/dev/null 2>&1; then
+    exec bun "$ROOT/index.ts" "$@"
+fi
+
+echo "herdr-tab-new: nothing to run in $ROOT — build it with: bun run build" >&2
+exit 1

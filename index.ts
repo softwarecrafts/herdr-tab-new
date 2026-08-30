@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { HerdrError } from "./src/herdr/client.ts";
 import { resolveProjectRoot } from "./src/resolve/project-root.ts";
+import { resolvePluginContext } from "./src/plugin/context.ts";
 import { resolveSocket } from "./src/resolve/socket.ts";
 import {
   AmbiguousWorkspaceError,
@@ -17,7 +18,12 @@ import {
   matchExistingSessions,
   type ExistingSession,
 } from "./src/resolve/existing.ts";
-import { ago, formatPickerRows, parseChoice } from "./src/cli/picker.ts";
+import {
+  ago,
+  formatPickerRows,
+  parseChoice,
+  resolveChoice,
+} from "./src/cli/picker.ts";
 import {
   assertKnownKind,
   DEFAULT_KIND,
@@ -48,6 +54,7 @@ import {
   agentKinds,
   appendRecord,
   attachToPane,
+  focusSession,
   closeTab,
   createTab,
   createWorktree,
@@ -65,8 +72,11 @@ import {
   listWorkspaces,
   readLayoutFiles,
   isWorktreeDirty,
+  openPluginPane,
   openWorktree,
   promptChoice,
+  promptOnStderr,
+  say,
   readRecords,
   removeWorktree,
   runSpread,
@@ -121,7 +131,47 @@ type Args = {
   branch?: string;
   workspace?: string;
   name?: string;
+  /** Set only when herdr invoked us as a plugin action. */
+  pluginAction?: PluginEntrypoint;
+  /** Set only when herdr launched us as a plugin pane. */
+  pluginPane?: PluginEntrypoint;
 };
+
+/**
+ * The entry points herdr-plugin.toml is allowed to name.
+ *
+ * Only "pick" for now — it subsumes starting a new session, because the picker
+ * already offers that as a row. Worktree mode, teardown and --list stay on the
+ * CLI, where they have flags and a scrollback to print into.
+ */
+const PLUGIN_ENTRYPOINTS = ["pick"] as const;
+type PluginEntrypoint = (typeof PLUGIN_ENTRYPOINTS)[number];
+
+function asEntrypoint(value: string): PluginEntrypoint {
+  if ((PLUGIN_ENTRYPOINTS as readonly string[]).includes(value)) {
+    return value as PluginEntrypoint;
+  }
+  // The manifest is the only caller, so this means the manifest and the binary
+  // have drifted apart — a plugin linked to a checkout newer than the binary
+  // built from it. Failing loudly beats a plugin action that quietly does
+  // nothing, which from inside herdr looks like a broken keybinding.
+  throw new Error(`unknown plugin entrypoint: "${value}"`);
+}
+
+/**
+ * The value after an option, or a refusal naming what was missing.
+ *
+ * `startsWith("-")` is the guard that matters: `--kind --dry-run` would
+ * otherwise set the agent kind to "--dry-run" and lose the flag, then fail much
+ * later with a confusing complaint about an unknown agent.
+ */
+function valueFor(argv: string[], i: number, option: string, expected: string): string {
+  const value = argv[i + 1];
+  if (!value || value.startsWith("-")) {
+    throw new Error(`${option} needs ${expected}`);
+  }
+  return value;
+}
 
 export function parseArgs(argv: string[]): Args {
   const args: Args = {
@@ -145,27 +195,27 @@ export function parseArgs(argv: string[]): Args {
     else if (arg === "--attach") args.attach = true;
     else if (arg === "-w" || arg === "--worktree") args.worktree = true;
     else if (arg === "--branch") {
-      const value = argv[i + 1];
-      if (!value || value.startsWith("-")) {
-        throw new Error("--branch needs a branch name");
-      }
-      args.branch = value;
+      args.branch = valueFor(argv, i, "--branch", "a branch name");
+      i += 1;
+    }
+    else if (arg === "--plugin-action") {
+      args.pluginAction = asEntrypoint(
+        valueFor(argv, i, "--plugin-action", "an entrypoint name"),
+      );
+      i += 1;
+    }
+    else if (arg === "--plugin-pane") {
+      args.pluginPane = asEntrypoint(
+        valueFor(argv, i, "--plugin-pane", "an entrypoint name"),
+      );
       i += 1;
     }
     else if (arg === "--kind") {
-      const value = argv[i + 1];
-      if (!value || value.startsWith("-")) {
-        throw new Error("--kind needs an agent name");
-      }
-      args.kind = value;
+      args.kind = valueFor(argv, i, "--kind", "an agent name");
       i += 1;
     }
     else if (arg === "--workspace") {
-      const value = argv[i + 1];
-      if (!value || value.startsWith("-")) {
-        throw new Error("--workspace needs a workspace id or label");
-      }
-      args.workspace = value;
+      args.workspace = valueFor(argv, i, "--workspace", "a workspace id or label");
       i += 1;
     } else if (arg.startsWith("-")) {
       throw new Error(`unknown option: ${arg}`);
@@ -197,11 +247,13 @@ function buildPlan(args: Args): ResolvedPlan {
   });
 
   const rootSource: ResolvedPlan["rootSource"] =
-    fromZed && isDirectory(fromZed)
-      ? "zed"
-      : gitToplevel(process.cwd())
-        ? "git"
-        : "cwd";
+    resolvePluginContext(process.env)
+      ? "plugin"
+      : fromZed && isDirectory(fromZed)
+        ? "zed"
+        : gitToplevel(process.cwd())
+          ? "git"
+          : "cwd";
 
   const workspace = chooseWorkspace(
     matchWorkspaces(listPanes(socketPath), projectRoot),
@@ -360,14 +412,13 @@ function offerExisting(sessions: ExistingSession[], socketPath: string): number 
     return EXIT.needsChoice;
   }
 
-  const choice = parseChoice(promptChoice("\nChoose: "), sessions.length);
+  const outcome = resolveChoice(promptChoice("\nChoose: "), sessions);
 
-  if (choice.kind === "existing") {
-    const chosen = sessions[choice.index]!;
-    attachToPane(socketPath, chosen.paneId, chosen.label ?? "");
+  if (outcome.kind === "focus") {
+    attachToPane(socketPath, outcome.session.paneId, outcome.session.label ?? "");
   }
-  if (choice.kind === "new") return null;
-  if (choice.kind === "invalid") {
+  if (outcome.kind === "create") return null;
+  if (outcome.kind === "invalid") {
     console.error("Not one of the options — nothing done.");
     return EXIT.usage;
   }
@@ -478,7 +529,12 @@ function startAndRecord(t: StartTarget): { started: boolean; reason: string } {
   return { started, reason };
 }
 
-function create(plan: ResolvedPlan): number {
+/**
+ * Returns the pane alongside the exit code: from a terminal the tool attaches
+ * and never comes back, but as a plugin it has to focus what it just made, and
+ * only this function knows which pane that is.
+ */
+function create(plan: ResolvedPlan): { code: number; paneId: string | null } {
   const { tab, rootPane } = createTab(plan.socketPath, {
     workspaceId: plan.workspace.workspace_id,
     cwd: plan.projectRoot,
@@ -511,7 +567,7 @@ function create(plan: ResolvedPlan): number {
   if (!started) {
     // The tab is real and useful even without the agent, so it stays.
     console.error(formatAgentFailed({ ...summary, reason }));
-    return EXIT.herdrUnavailable;
+    return { code: EXIT.herdrUnavailable, paneId: rootPane.pane_id };
   }
 
   console.log(formatCreated(summary));
@@ -521,7 +577,7 @@ function create(plan: ResolvedPlan): number {
     attachToPane(plan.socketPath, rootPane.pane_id, plan.label);
   }
 
-  return EXIT.ok;
+  return { code: EXIT.ok, paneId: rootPane.pane_id };
 }
 
 /**
@@ -626,6 +682,105 @@ function createInWorktree(args: Args): number {
   return EXIT.ok;
 }
 
+
+/**
+ * herdr invoked us as a plugin action.
+ *
+ * There is no terminal here at all — herdr runs action commands with no tty on
+ * any stream and captures their output into `herdr plugin log`. So this decides
+ * and delegates: with nothing already open for the project it creates a session
+ * outright, and otherwise hands over to the popup pane, which is the only
+ * placement that can ask a question.
+ */
+function pluginPick(): number {
+  const pluginId = process.env.HERDR_PLUGIN_ID;
+  if (!pluginId) {
+    console.error(
+      "--plugin-action is herdr's entry point, not a command to run by hand.",
+    );
+    return EXIT.usage;
+  }
+
+  const { socketPath } = resolveSocket(process.env, listSessions());
+  const projectRoot = resolveProjectRoot(process.env, process.cwd(), {
+    isDirectory,
+    gitToplevel,
+  });
+  const existing = matchExistingSessions({
+    ...sessionSources(socketPath),
+    projectRoot,
+  });
+
+  if (existing.length > 0) {
+    openPluginPane(socketPath, { pluginId, entrypoint: "picker", projectRoot });
+    return EXIT.ok;
+  }
+
+  // Nothing open for this project, so there is nothing to choose between. A
+  // popup listing one row and a "start a new session" line would be a question
+  // with one answer.
+  const { code, paneId } = create(resolveOrSpread(parseArgs([])));
+  if (code === EXIT.ok && paneId) focusSession(socketPath, paneId);
+
+  return code;
+}
+
+
+/**
+ * The popup pane herdr opened on our behalf: the picker, asked properly.
+ *
+ * Everything the user must read goes to stderr. In a popup that is the pty,
+ * while stdout is piped into `herdr plugin log` — so the familiar console.log
+ * would print the whole list somewhere nobody can see it, and the prompt would
+ * appear to hang. `say` and `promptOnStderr` exist for exactly that.
+ *
+ * Nothing here attaches. Inside herdr the equivalent of handing your terminal
+ * over is focusing the tab, and the popup closes as soon as this returns.
+ */
+function pluginPickPane(): number {
+  const { socketPath } = resolveSocket(process.env, listSessions());
+  const projectRoot = resolveProjectRoot(process.env, process.cwd(), {
+    isDirectory,
+    gitToplevel,
+  });
+  const sessions = matchExistingSessions({
+    ...sessionSources(socketPath),
+    projectRoot,
+  });
+
+  const createAndFocus = (): number => {
+    const { code, paneId } = create(resolveOrSpread(parseArgs([])));
+    if (code === EXIT.ok && paneId) focusSession(socketPath, paneId);
+    return code;
+  };
+
+  // The action counted these before opening the popup, so an empty list here
+  // means the last session closed in between. Asking which of nothing to resume
+  // would be a worse answer than simply making one.
+  if (sessions.length === 0) return createAndFocus();
+
+  say(
+    `${sessions.length} session${sessions.length === 1 ? "" : "s"} already open here:\n`,
+  );
+  for (const row of formatPickerRows(sessions, Date.now())) say(row);
+
+  const outcome = resolveChoice(promptOnStderr("\nChoose: "), sessions);
+
+  if (outcome.kind === "create") return createAndFocus();
+  if (outcome.kind === "focus") {
+    if (focusSession(socketPath, outcome.session.paneId)) return EXIT.ok;
+
+    say("That session has closed since the list was drawn — nothing done.");
+    return EXIT.usage;
+  }
+  if (outcome.kind === "invalid") {
+    say("Not one of the options — nothing done.");
+    return EXIT.usage;
+  }
+
+  return EXIT.ok;
+}
+
 export function main(argv: string[]): number {
   let args: Args;
   try {
@@ -641,6 +796,8 @@ export function main(argv: string[]): number {
   }
 
   try {
+    if (args.pluginPane) return pluginPickPane();
+    if (args.pluginAction) return pluginPick();
     if (args.list) return list();
     if (args.teardown) return teardown(args);
     if (args.attach) return attachAnywhere();
@@ -677,7 +834,7 @@ export function main(argv: string[]): number {
       return EXIT.ok;
     }
 
-    return create(plan);
+    return create(plan).code;
   } catch (err) {
     if (err instanceof NoWorkspaceMatchError) {
       console.error(

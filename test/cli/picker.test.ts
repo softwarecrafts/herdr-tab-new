@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { formatPickerRows, parseChoice } from "../../src/cli/picker.ts";
+import {
+  formatPickerRows,
+  parseChoice,
+  resolveChoice,
+} from "../../src/cli/picker.ts";
 import type { ExistingSession } from "../../src/resolve/existing.ts";
 
 const NOW = Date.parse("2026-08-19T12:00:00.000Z");
@@ -135,5 +139,37 @@ describe("formatPickerRows", () => {
     const rows = formatPickerRows([session({ status: "working" })], NOW);
 
     expect(rows[0]).toContain("working");
+  });
+});
+
+describe("resolveChoice", () => {
+  const sessions = [
+    session({ paneId: "w2:p2", label: "compliance" }),
+    session({ paneId: "w2:p7", label: "compliance-2" }),
+  ];
+
+  test("maps a number onto the session printed on that row", () => {
+    // The one mapping that must never drift. The CLI and the plugin popup both
+    // reach it now, and getting it wrong attaches you to somebody else's work.
+    expect(resolveChoice("2", sessions)).toEqual({
+      kind: "focus",
+      session: sessions[1]!,
+    });
+  });
+
+  test("maps the new key onto creating rather than onto a session", () => {
+    expect(resolveChoice("n", sessions)).toEqual({ kind: "create" });
+  });
+
+  test("treats a bare Enter as walking away", () => {
+    expect(resolveChoice("", sessions)).toEqual({ kind: "cancel" });
+  });
+
+  test("refuses a row number that is not on screen", () => {
+    expect(resolveChoice("3", sessions)).toEqual({ kind: "invalid" });
+  });
+
+  test("refuses a typo rather than rounding it to a session", () => {
+    expect(resolveChoice("1x", sessions)).toEqual({ kind: "invalid" });
   });
 });

@@ -12,10 +12,13 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   buildHerdrInvocation,
+  herdrBin,
   HerdrError,
   parseHerdrResponse,
   selectHerdrPayload,
 } from "./herdr/client.ts";
+import { focusArgs } from "./plugin/focus.ts";
+import { paneOpenArgs, type PaneOpen } from "./plugin/pane-open.ts";
 import type {
   AgentInfo,
   Pane,
@@ -89,7 +92,7 @@ export function runHerdr(args: string[], socketPath: string): unknown {
  * no socket — it is how we *find* the socket.
  */
 export function listSessions(): Session[] {
-  const { stdout, stderr } = capture(["herdr", "session", "list", "--json"]);
+  const { stdout, stderr } = capture([herdrBin(process.env), "session", "list", "--json"]);
   const payload = selectHerdrPayload(stdout, stderr);
 
   try {
@@ -240,7 +243,7 @@ export function closeTab(socketPath: string, tabId: string): void {
  * list only if the help stops being parseable.
  */
 export function agentKinds(): string[] {
-  const { stdout, stderr } = capture(["herdr", "agent", "start", "--help"]);
+  const { stdout, stderr } = capture([herdrBin(process.env), "agent", "start", "--help"]);
   return parseAgentKinds(`${stdout}${stderr}`) ?? FALLBACK_KINDS;
 }
 
@@ -397,3 +400,41 @@ export function promptChoice(message: string): string {
 }
 
 export const isInteractive = (): boolean => Boolean(process.stdin.isTTY);
+
+/**
+ * Ask a question inside a plugin popup pane.
+ *
+ * A popup gets stdin and stderr on the pty, but its stdout is piped into
+ * `herdr plugin log`. So console.log prints where nobody can see it, and Bun's
+ * prompt() — which writes its message to stdout — asks a question that never
+ * appears on screen while apparently hanging. The question goes to stderr, and
+ * prompt() is used for nothing but the line read.
+ */
+export function promptOnStderr(message: string): string {
+  process.stderr.write(message);
+  return prompt("") ?? "";
+}
+
+/** Everything the user must actually see inside a popup. */
+export function say(line: string): void {
+  process.stderr.write(`${line}\n`);
+}
+
+/**
+ * Bring an existing session to the front, from inside herdr.
+ *
+ * Returns false when the pane has gone since it was listed, so the caller can
+ * say so rather than reporting a focus that never happened.
+ */
+export function focusSession(socketPath: string, paneId: string): boolean {
+  const steps = focusArgs(listPanes(socketPath), paneId);
+  if (!steps) return false;
+
+  for (const step of steps) runHerdr(step, socketPath);
+  return true;
+}
+
+/** Ask herdr to open one of our declared plugin panes. */
+export function openPluginPane(socketPath: string, open: PaneOpen): void {
+  runHerdr(paneOpenArgs(open), socketPath);
+}

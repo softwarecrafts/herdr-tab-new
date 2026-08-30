@@ -1,0 +1,38 @@
+id = "softwarecrafts.tab-new"
+name = "Tab New"
+version = "0.1.0"
+min_herdr_version = "0.7.4"
+description = "Resume or start an agent session in the herdr workspace for this project"
+platforms = ["macos", "linux"]
+
+# Run on `herdr plugin install` only — `plugin link` expects local authors to
+# build their own tree, which is why bin/herdr-tab-new falls back to bun.
+[[build]]
+command = ["bun", "install", "--frozen-lockfile"]
+
+[[build]]
+command = ["bun", "run", "build"]
+
+# The one action. It subsumes starting a new session: the picker offers that as
+# a row. Worktree mode, teardown and --list stay on the CLI.
+[[actions]]
+id = "pick"
+title = "Agent session: resume or start"
+contexts = ["workspace", "tab", "pane"]
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-tab-new\" --plugin-action pick"]
+
+# `sh -c` with an absolute path, not ["./bin/herdr-tab-new", ...]: `plugin pane
+# open --cwd` changes the working directory *before* resolving a relative
+# command, so a relative form fails with "Unable to spawn <cwd>/./bin/...".
+#
+# placement must be declared here rather than passed to `plugin pane open`,
+# whose --placement flag accepts only overlay|split|tab|zoomed. Popup is the
+# placement that matters: it is the only one that gets terminal input, and in it
+# stdin and stderr are the pty while stdout goes to the plugin log.
+[[panes]]
+id = "picker"
+title = "Agent sessions"
+placement = "popup"
+width = "70%"
+height = 16
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-tab-new\" --plugin-pane pick"]
