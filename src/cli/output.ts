@@ -266,6 +266,54 @@ export function formatWorktreeCreated(w: WorktreeSummary): string {
   ].join("\n");
 }
 
+export type WorktreePlan = {
+  agentKind: string;
+  projectRoot: string;
+  branch: string;
+  label: string;
+  /** True when the branch exists already, so worktree mode would reuse it. */
+  branchExists: boolean;
+  sessionName: string;
+  socketPath: string;
+};
+
+/**
+ * Worktree mode's `--dry-run`: what would be made, having made none of it.
+ *
+ * The worktree path is deliberately not shown. herdr picks it (from its
+ * `[worktrees] directory` and its own branch slugging), and there is no way to
+ * ask without creating the worktree — a guessed path here would look like a
+ * promise and could be wrong.
+ */
+export function formatWorktreePlan(p: WorktreePlan): string {
+  const rows: [string, string][] = [
+    ["project", p.projectRoot],
+    [
+      "branch",
+      p.branchExists
+        ? `${p.branch}  (existing branch, would be reused)`
+        : `${p.branch}  (new, from the current HEAD)`,
+    ],
+    ["worktree", "a new checkout, path chosen by herdr under its worktrees directory"],
+    ["workspace", `${p.label}  (a new workspace for the worktree)`],
+    ["session", p.sessionName],
+  ];
+
+  if (p.sessionName !== "default") {
+    rows.push(["socket", p.socketPath]);
+  }
+
+  const width = Math.max(...rows.map(([key]) => key.length));
+
+  return [
+    `Would start ${p.agentKind} on branch "${p.branch}" in a new git worktree`,
+    "",
+    ...rows.map(([key, value]) => `  ${key.padEnd(width)}  ${value}`),
+    "",
+    "Nothing was created.",
+  ].join("\n");
+}
+
 const BRANCH_NOTE =
   "Branches are left alone — removing a worktree does not delete its branch.";
 

@@ -47,6 +47,7 @@ import {
   formatTeardownPlan,
   formatTeardownResult,
   formatWorktreeCreated,
+  formatWorktreePlan,
   type CreatedSummary,
   type ResolvedPlan,
 } from "./src/cli/output.ts";
@@ -59,6 +60,7 @@ import {
   createTab,
   createWorktree,
   gitBranch,
+  gitBranchExists,
   gitToplevel,
   home,
   isDirectory,
@@ -606,6 +608,23 @@ function createInWorktree(args: Args): number {
     requestedName: args.name,
     requestedBranch: args.branch,
   });
+
+  // Before herdr is asked to create anything: this is the only place worktree
+  // mode can be stopped, since `worktree create` has no dry run of its own.
+  if (args.dryRun) {
+    console.log(
+      formatWorktreePlan({
+        agentKind: args.kind,
+        projectRoot,
+        branch,
+        label,
+        branchExists: gitBranchExists(projectRoot, branch),
+        sessionName,
+        socketPath,
+      }),
+    );
+    return EXIT.ok;
+  }
 
   let result;
   let reused = false;

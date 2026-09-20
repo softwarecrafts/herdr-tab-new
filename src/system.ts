@@ -153,6 +153,19 @@ export function gitBranch(cwd: string): string | null {
   return ok && stdout.trim() ? stdout.trim() : null;
 }
 
+/** Whether a local branch of this name exists, so a preview can say "reused" or "new". */
+export function gitBranchExists(cwd: string, branch: string): boolean {
+  return capture([
+    "git",
+    "-C",
+    cwd,
+    "rev-parse",
+    "--verify",
+    "--quiet",
+    `refs/heads/${branch}`,
+  ]).ok;
+}
+
 /**
  * Read every layout in ~/.herdr-spreader/. One workspace per file; the basename
  * is what `spread` takes as its argument. Returns null when the directory is
